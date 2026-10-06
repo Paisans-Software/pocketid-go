@@ -250,13 +250,16 @@ func (u User) InGroup(id string) bool {
 }
 
 // NewUser is dto.UserCreateDto (dto/user_dto.go:25-38), the fields set here.
+// EmailVerified is stored as sent (service/user_service.go:299); left out, it
+// is false, and Pocket ID then sends email_verified false in every ID token.
 type NewUser struct {
-	Username    string  `json:"username"`
-	Email       *string `json:"email,omitempty"`
-	FirstName   string  `json:"firstName"`
-	LastName    string  `json:"lastName"`
-	DisplayName string  `json:"displayName"`
-	IsAdmin     bool    `json:"isAdmin"`
+	Username      string  `json:"username"`
+	Email         *string `json:"email,omitempty"`
+	EmailVerified bool    `json:"emailVerified,omitempty"`
+	FirstName     string  `json:"firstName"`
+	LastName      string  `json:"lastName"`
+	DisplayName   string  `json:"displayName"`
+	IsAdmin       bool    `json:"isAdmin"`
 }
 
 // FindUser returns the user with exactly this username, or nil.
@@ -282,14 +285,34 @@ func (c *Client) CreateUser(u NewUser) (User, error) {
 	return out, err
 }
 
-// SetAdmin makes an existing user an administrator.
+// SetAdmin makes an existing user an administrator. See updateUser.
+func (c *Client) SetAdmin(u User) error {
+	u.IsAdmin = true
+	return c.updateUser(u)
+}
+
+// VerifyEmail marks an existing user's email address verified, so the ID
+// tokens Pocket ID issues for them carry email_verified true. See updateUser.
+//
+// An administrator's update stores emailVerified as sent
+// (service/user_service.go:515-517). The one rule that would override it,
+// resetting verification to the EMAILS_VERIFIED setting, applies only when the
+// email changes (service/user_service.go:507-510), and the email is sent back
+// unchanged.
+func (c *Client) VerifyEmail(u User) error {
+	u.EmailVerified = true
+	return c.updateUser(u)
+}
+
+// updateUser sends a user back as given.
 //
 // PUT /api/users/:id (controller/user_controller.go:34, :279-281, :430-440)
 // takes the whole create DTO and overwrites every personal field, admin flag,
 // verification and disabled state with what it is sent
-// (service/user_service.go:495-519), so the user is sent back exactly as read
-// with only isAdmin changed. Sending only the flag would blank the name.
-func (c *Client) SetAdmin(u User) error {
+// (service/user_service.go:495-519), so a caller changes one field of the user
+// exactly as read and sends the rest unchanged. Sending only the one field
+// would blank the name.
+func (c *Client) updateUser(u User) error {
 	lastName := ""
 	if u.LastName != nil {
 		lastName = *u.LastName
@@ -301,7 +324,7 @@ func (c *Client) SetAdmin(u User) error {
 		"firstName":     u.FirstName,
 		"lastName":      lastName,
 		"displayName":   u.DisplayName,
-		"isAdmin":       true,
+		"isAdmin":       u.IsAdmin,
 		"locale":        u.Locale,
 		"disabled":      u.Disabled,
 	}
