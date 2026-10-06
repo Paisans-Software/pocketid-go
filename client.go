@@ -404,16 +404,20 @@ type OIDCClient struct {
 	PkceEnabled       bool     `json:"pkceEnabled"`
 	IsGroupRestricted bool     `json:"isGroupRestricted"`
 	AllowedUserGroups []Group  `json:"allowedUserGroups"`
+	LaunchURL         *string  `json:"launchURL"`
 }
 
 // NewOIDCClient is dto.OidcClientCreateDto (dto/oidc_dto.go:41-65), the fields
-// set here. The ID is left to Pocket ID.
+// set here. The ID is left to Pocket ID. LaunchURL is what puts the client
+// on a member's dashboard: both lists the dashboard reads show only clients
+// that have one (service/oidc_service.go:673-680, :758-765).
 type NewOIDCClient struct {
 	Name              string   `json:"name"`
 	CallbackURLs      []string `json:"callbackURLs"`
 	IsPublic          bool     `json:"isPublic"`
 	PkceEnabled       bool     `json:"pkceEnabled"`
 	IsGroupRestricted bool     `json:"isGroupRestricted"`
+	LaunchURL         string   `json:"launchURL,omitempty"`
 }
 
 // FindOIDCClient returns the client with exactly this name, with its allowed
@@ -444,6 +448,57 @@ func (c *Client) CreateOIDCClient(n NewOIDCClient) (OIDCClient, error) {
 	var out OIDCClient
 	err := c.do("POST", "/api/oidc/clients", nil, n, &out, 201)
 	return out, err
+}
+
+// clientUpdateFields are the fields of dto.OidcClientUpdateDto
+// (dto/oidc_dto.go:41-60) that the update writes to the client
+// (service/oidc_service.go:252-294) and that a read of the client returns
+// (dto/oidc_dto.go:5-29), apart from credentials, which is handled on its own.
+var clientUpdateFields = []string{
+	"name", "description", "callbackURLs", "logoutCallbackURLs", "isPublic",
+	"pkceEnabled", "requiresReauthentication", "requiresPushedAuthorizationRequests",
+	"skipConsent", "isGroupRestricted", "accessTokenDurationMinutes",
+	"refreshTokenDurationMinutes",
+}
+
+// SetLaunchURL sets a client's launch URL and leaves the rest of it as it is.
+//
+// PUT /api/oidc/clients/:id (controller/oidc_controller.go:32, :217-237)
+// overwrites every field it takes with what it is sent
+// (service/oidc_service.go:186-250, :252-294), so the client is read again
+// and every field sent back as read, with only launchURL changed. In
+// particular: callback URLs, PKCE and the public flag are sent unchanged;
+// isGroupRestricted is sent unchanged, which matters because sending false
+// clears the allowed groups (:199-205); the federated credentials are sent
+// back, since the update replaces them (:282-292). Secrets are not sent and
+// would be ignored (dto/oidc_dto.go:93-94), and neither is a logo URL, which
+// is fetched only when one is sent (:235-247).
+//
+// One side effect is Pocket ID's own: a client with PKCE off has its "PKCE
+// supported" hint cleared (:277-280), as saving it in the admin UI does.
+func (c *Client) SetLaunchURL(clientID, launchURL string) error {
+	path := "/api/oidc/clients/" + url.PathEscape(clientID)
+	var current map[string]json.RawMessage
+	if err := c.do("GET", path, nil, nil, &current, 200); err != nil {
+		return err
+	}
+	body := map[string]any{}
+	for _, k := range clientUpdateFields {
+		if v, ok := current[k]; ok {
+			body[k] = v
+		}
+	}
+	var creds struct {
+		FederatedIdentities json.RawMessage `json:"federatedIdentities,omitempty"`
+	}
+	if raw, ok := current["credentials"]; ok {
+		if err := json.Unmarshal(raw, &creds); err != nil {
+			return fmt.Errorf("GET %s: its credentials are not the JSON expected: %v", path, err)
+		}
+	}
+	body["credentials"] = creds
+	body["launchURL"] = launchURL
+	return c.do("PUT", path, nil, body, nil, 200)
 }
 
 // SetAllowedGroups replaces the groups a restricted client admits.

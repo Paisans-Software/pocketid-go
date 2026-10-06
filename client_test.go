@@ -167,3 +167,49 @@ func TestNoKeyIsRefusedBeforeAnyRequest(t *testing.T) {
 		t.Error("a request was made without a key")
 	}
 }
+
+// SetLaunchURL reads the client and sends every field the update writes back
+// as read, with only launchURL changed: federated credentials kept, secrets
+// and logo URLs not sent, and the group restriction unchanged.
+func TestSetLaunchURLSendsTheClientBackUnchanged(t *testing.T) {
+	current := `{"id":"c-1","name":"talk","description":"","hasLogo":true,"hasDarkLogo":false,"launchURL":null,
+		"requiresReauthentication":false,"clientType":"","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],
+		"logoutCallbackURLs":[],"isPublic":false,"pkceEnabled":true,"requiresPushedAuthorizationRequests":false,
+		"skipConsent":true,"credentials":{"federatedIdentities":[{"issuer":"https://ci.example.org","replayProtection":false}],
+		"secrets":[{"id":"s-1","prefix":"abcd","isActive":true}]},"isGroupRestricted":true,
+		"accessTokenDurationMinutes":60,"refreshTokenDurationMinutes":43200,"allowedUserGroups":[{"id":"g-1","name":"members"}]}`
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
+		if r.Method == "GET" {
+			return 200, current
+		}
+		return 200, `{}`
+	}}
+	if err := newClient(f).SetLaunchURL("c-1", "https://talk.example.org"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.requests) != 2 || f.requests[1].Method != "PUT" || f.requests[1].URL.Path != "/api/oidc/clients/c-1" {
+		t.Fatalf("requests %+v", f.requests)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal([]byte(f.requests[1].Body), &sent); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{
+		"name": "talk", "description": "", "callbackURLs": []any{"https://talk.example.org/oauth/oidc/verify"},
+		"logoutCallbackURLs": []any{}, "isPublic": false, "pkceEnabled": true, "requiresReauthentication": false,
+		"requiresPushedAuthorizationRequests": false, "skipConsent": true, "isGroupRestricted": true,
+		"accessTokenDurationMinutes": float64(60), "refreshTokenDurationMinutes": float64(43200),
+		"credentials": map[string]any{"federatedIdentities": []any{map[string]any{"issuer": "https://ci.example.org", "replayProtection": false}}},
+		"launchURL":   "https://talk.example.org",
+	}
+	got, _ := json.Marshal(sent)
+	exp, _ := json.Marshal(want)
+	if string(got) != string(exp) {
+		t.Errorf("sent %s\nwant %s", got, exp)
+	}
+	for _, c := range f.commands {
+		if c != pocketid.CurlCommand || strings.Contains(c, apiKey) {
+			t.Errorf("ran %q", c)
+		}
+	}
+}
