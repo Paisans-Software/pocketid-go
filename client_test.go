@@ -213,3 +213,37 @@ func TestSetLaunchURLSendsTheClientBackUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// A client is read and deleted by ID, and an ID Pocket ID does not hold is
+// nil on a read and success on a delete, so a repeated removal ends the same.
+func TestClientByIDAndDelete(t *testing.T) {
+	held := true
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
+		if r.URL.Path != "/api/oidc/clients/c-1" {
+			t.Errorf("sent %s %s", r.Method, r.URL)
+		}
+		switch {
+		case !held:
+			return 404, `{"error":"OIDC client not found"}`
+		case r.Method == "DELETE":
+			held = false
+			return 204, ""
+		default:
+			return 200, `{"id":"c-1","name":"docs"}`
+		}
+	}}
+	c := newClient(f)
+	got, err := c.OIDCClientByID("c-1")
+	if err != nil || got == nil || got.Name != "docs" {
+		t.Fatalf("OIDCClientByID = %+v, %v", got, err)
+	}
+	if err := c.DeleteOIDCClient("c-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeleteOIDCClient("c-1"); err != nil {
+		t.Errorf("a second delete: %v", err)
+	}
+	if got, err := c.OIDCClientByID("c-1"); err != nil || got != nil {
+		t.Errorf("after the delete: %+v, %v", got, err)
+	}
+}

@@ -527,6 +527,38 @@ func (c *Client) FindOIDCClient(name string) (*OIDCClient, error) {
 	return nil, nil
 }
 
+// OIDCClientByID returns the client with this ID, or nil when Pocket ID holds
+// none. GET /api/oidc/clients/:id (controller/oidc_controller.go:30) answers
+// 404 for an ID it does not hold: the service maps gorm's record not found to
+// apperror.NotFound (service/oidc_service.go, getClientInternal), which is
+// http.StatusNotFound (apperror/constructors.go:14-16), at tag v2.14.0.
+func (c *Client) OIDCClientByID(id string) (*OIDCClient, error) {
+	var out OIDCClient
+	err := c.do("GET", "/api/oidc/clients/"+url.PathEscape(id), nil, nil, &out, 200)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == 404 {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteOIDCClient deletes a client by ID. DELETE /api/oidc/clients/:id
+// answers 204 (controller/oidc_controller.go:34, deleteClientHandler) and 404
+// for an ID it does not hold (service/oidc_service.go, DeleteClient), at tag
+// v2.14.0. A 404 is success here, so a run interrupted after the delete
+// reaches the same end on the next one.
+func (c *Client) DeleteOIDCClient(id string) error {
+	err := c.do("DELETE", "/api/oidc/clients/"+url.PathEscape(id), nil, nil, nil, 204)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == 404 {
+		return nil
+	}
+	return err
+}
+
 // CreateOIDCClient creates a client. POST /api/oidc/clients answers 201
 // (controller/oidc_controller.go:29, :166-186). It creates no secret.
 func (c *Client) CreateOIDCClient(n NewOIDCClient) (OIDCClient, error) {
