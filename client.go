@@ -18,10 +18,13 @@
 package pocketid
 
 import (
+	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -50,8 +53,13 @@ const statusMarker = "\npaisans-http-status:"
 
 // Client is one Pocket ID, reached at BaseURL from the host the Transport
 // reaches. BaseURL is the published mesh port, as in http://10.44.0.1:1411.
+//
+// HTTP, when set, sends each request straight to BaseURL instead, and
+// Transport is not used. That is for code running beside Pocket ID on the
+// mesh, such as the admin guard, which has no ssh to go through.
 type Client struct {
 	Transport Transport
+	HTTP      *http.Client
 	BaseURL   string
 	APIKey    string
 }
@@ -77,17 +85,16 @@ func (e *APIError) Error() string {
 // scrubbed from an error before it is returned.
 func (c *Client) do(method, path string, query url.Values, body, out any, want int, secrets ...string) error {
 	secrets = append(secrets, c.APIKey)
-	cfg, err := c.config(method, path, query, body)
+	var status int
+	var payload string
+	var err error
+	if c.HTTP != nil {
+		status, payload, err = c.send(method, path, query, body)
+	} else {
+		status, payload, err = c.curl(method, path, query, body)
+	}
 	if err != nil {
 		return Redact(err, secrets...)
-	}
-	raw, err := c.Transport.RunInput(CurlCommand, cfg)
-	if err != nil {
-		return Redact(fmt.Errorf("%s %s through %s: %w", method, path, c.Transport.Describe(), err), secrets...)
-	}
-	status, payload, err := splitStatus(raw)
-	if err != nil {
-		return Redact(fmt.Errorf("%s %s: %w", method, path, err), secrets...)
 	}
 	if status != want {
 		var e struct {
@@ -106,6 +113,66 @@ func (c *Client) do(method, path string, query url.Values, body, out any, want i
 		return fmt.Errorf("%s %s: the %d response is not the JSON expected: %v", method, path, status, err)
 	}
 	return nil
+}
+
+// curl sends one request through curl on the Transport's host.
+func (c *Client) curl(method, path string, query url.Values, body any) (int, string, error) {
+	cfg, err := c.config(method, path, query, body)
+	if err != nil {
+		return 0, "", err
+	}
+	raw, err := c.Transport.RunInput(CurlCommand, cfg)
+	if err != nil {
+		return 0, "", fmt.Errorf("%s %s through %s: %w", method, path, c.Transport.Describe(), err)
+	}
+	status, payload, err := splitStatus(raw)
+	if err != nil {
+		return 0, "", fmt.Errorf("%s %s: %w", method, path, err)
+	}
+	return status, payload, nil
+}
+
+// send sends one request with HTTP, carrying what config gives curl: the key,
+// JSON both ways, and a 30 second limit when the client sets none.
+func (c *Client) send(method, path string, query url.Values, body any) (int, string, error) {
+	if c.APIKey == "" {
+		return 0, "", errors.New("no API key: set apps.<pocket-id app>.static_api_key with `paisans init` and apply it")
+	}
+	target := strings.TrimRight(c.BaseURL, "/") + path
+	if len(query) > 0 {
+		target += "?" + query.Encode()
+	}
+	var reader io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return 0, "", err
+		}
+		reader = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequest(method, target, reader)
+	if err != nil {
+		return 0, "", fmt.Errorf("%s %s: %w", method, path, err)
+	}
+	req.Header.Set("X-API-Key", c.APIKey)
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	client := *c.HTTP
+	if client.Timeout == 0 {
+		client.Timeout = 30 * time.Second
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0, "", fmt.Errorf("%s %s: Pocket ID did not answer: %w", method, path, err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return 0, "", fmt.Errorf("%s %s: reading the response: %w", method, path, err)
+	}
+	return resp.StatusCode, string(raw), nil
 }
 
 // config is curl's configuration for one request. Every value is a quoted
@@ -237,6 +304,9 @@ type User struct {
 	Locale        *string `json:"locale"`
 	Disabled      bool    `json:"disabled"`
 	UserGroups    []Group `json:"userGroups"`
+	// LdapID is set on a user an LDAP sync manages, whose groups that sync
+	// owns (dto/user_dto.go:21).
+	LdapID *string `json:"ldapId"`
 }
 
 // InGroup reports whether the user belongs to a group, by ID.
@@ -275,6 +345,21 @@ func (c *Client) FindUser(username string) (*User, error) {
 		}
 	}
 	return nil, nil
+}
+
+// Users returns every user, each with its groups: ListUsers preloads them
+// (service/user_service.go:51-56).
+func (c *Client) Users() ([]User, error) {
+	return list[User](c, "/api/users", "")
+}
+
+// User reads one user with its groups. GET /api/users/:id
+// (controller/user_controller.go:32; service/user_service.go:70-80 preloads
+// UserGroups).
+func (c *Client) User(id string) (User, error) {
+	var out User
+	err := c.do("GET", "/api/users/"+url.PathEscape(id), nil, nil, &out, 200)
+	return out, err
 }
 
 // CreateUser creates a user. POST /api/users answers 201 with the user
