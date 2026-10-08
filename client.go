@@ -56,7 +56,7 @@ const statusMarker = "\npaisans-http-status:"
 //
 // HTTP, when set, sends each request straight to BaseURL instead, and
 // Transport is not used. That is for code running beside Pocket ID on the
-// mesh, such as the admin guard, which has no ssh to go through.
+// mesh, such as the admin reconciler, which has no ssh to go through.
 type Client struct {
 	Transport Transport
 	HTTP      *http.Client
