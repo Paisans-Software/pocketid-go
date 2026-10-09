@@ -376,6 +376,12 @@ func (c *Client) SetAdmin(u User) error {
 	return c.updateUser(u)
 }
 
+// Demote makes an existing administrator an ordinary user. See updateUser.
+func (c *Client) Demote(u User) error {
+	u.IsAdmin = false
+	return c.updateUser(u)
+}
+
 // VerifyEmail marks an existing user's email address verified, so the ID
 // tokens Pocket ID issues for them carry email_verified true. See updateUser.
 //
