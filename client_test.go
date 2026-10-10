@@ -247,3 +247,56 @@ func TestClientByIDAndDelete(t *testing.T) {
 		t.Errorf("after the delete: %+v, %v", got, err)
 	}
 }
+
+// HasAdmin reads users page by page, unfiltered, and stops at the first that
+// is an admin.
+func TestHasAdminStopsAtTheFirstAdmin(t *testing.T) {
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
+		if r.Method != "GET" || r.URL.Path != "/api/users" || r.URL.Query().Get("search") != "" {
+			t.Errorf("sent %s %s", r.Method, r.URL)
+		}
+		switch r.URL.Query().Get("pagination[page]") {
+		case "1":
+			return 200, `{"data":[{"id":"u-0","username":"member"}],"pagination":{"totalPages":3}}`
+		case "2":
+			return 200, `{"data":[{"id":"u-1","username":"founder","isAdmin":true}],"pagination":{"totalPages":3}}`
+		}
+		return 200, `{"data":[{"id":"u-2","username":"later"}],"pagination":{"totalPages":3}}`
+	}}
+	has, err := newClient(f).HasAdmin()
+	if err != nil || !has {
+		t.Fatalf("has %t, err %v", has, err)
+	}
+	if len(f.requests) != 2 {
+		t.Errorf("read %d pages, want 2", len(f.requests))
+	}
+}
+
+// With no admin on any page, every page is read and the answer is no.
+func TestHasAdminReadsEveryPageWhenThereIsNone(t *testing.T) {
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
+		if r.URL.Query().Get("pagination[page]") == "1" {
+			return 200, `{"data":[{"id":"u-0","username":"member"}],"pagination":{"totalPages":2}}`
+		}
+		return 200, `{"data":[{"id":"u-1","username":"other"}],"pagination":{"totalPages":2}}`
+	}}
+	has, err := newClient(f).HasAdmin()
+	if err != nil || has {
+		t.Fatalf("has %t, err %v", has, err)
+	}
+	if len(f.requests) != 2 {
+		t.Errorf("read %d pages, want 2", len(f.requests))
+	}
+}
+
+// An error is returned as an error, never as no admin, and never carries the
+// key.
+func TestHasAdminFailsWithoutTheKey(t *testing.T) {
+	f := &fakeAPI{t: t, handle: func(request) (int, string) {
+		return 401, `{"error":"bad key ` + apiKey + `"}`
+	}}
+	has, err := newClient(f).HasAdmin()
+	if err == nil || has || strings.Contains(err.Error(), apiKey) {
+		t.Fatalf("has %t, err %v", has, err)
+	}
+}

@@ -26,6 +26,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -266,6 +267,19 @@ type paginated[T any] struct {
 // is a substring match (LIKE '%term%'), so callers compare exactly afterwards.
 func list[T any](c *Client, path, search string) ([]T, error) {
 	var out []T
+	err := pages(c, path, search, func(data []T) bool {
+		out = append(out, data...)
+		return false
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// pages hands each page of a list route filtered by search to visit, in
+// order, until visit returns true or the last page has been read.
+func pages[T any](c *Client, path, search string, visit func([]T) bool) error {
 	for page := 1; ; page++ {
 		q := url.Values{}
 		q.Set("search", search)
@@ -273,11 +287,10 @@ func list[T any](c *Client, path, search string) ([]T, error) {
 		q.Set("pagination[limit]", strconv.Itoa(pageSize))
 		var got paginated[T]
 		if err := c.do("GET", path, q, nil, &got, 200); err != nil {
-			return nil, err
+			return err
 		}
-		out = append(out, got.Data...)
-		if page >= got.Pagination.TotalPages || len(got.Data) == 0 {
-			return out, nil
+		if visit(got.Data) || page >= got.Pagination.TotalPages || len(got.Data) == 0 {
+			return nil
 		}
 	}
 }
@@ -351,6 +364,20 @@ func (c *Client) FindUser(username string) (*User, error) {
 // (service/user_service.go:51-56).
 func (c *Client) Users() ([]User, error) {
 	return list[User](c, "/api/users", "")
+}
+
+// HasAdmin reports whether any user is an admin, reading GET /api/users page
+// by page and stopping at the first that is. Read only.
+func (c *Client) HasAdmin() (bool, error) {
+	found := false
+	err := pages(c, "/api/users", "", func(users []User) bool {
+		found = slices.ContainsFunc(users, func(u User) bool { return u.IsAdmin })
+		return found
+	})
+	if err != nil {
+		return false, err
+	}
+	return found, nil
 }
 
 // User reads one user with its groups. GET /api/users/:id
