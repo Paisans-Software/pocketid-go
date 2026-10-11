@@ -360,6 +360,13 @@ func (c *Client) FindUser(username string) (*User, error) {
 	return nil, nil
 }
 
+// SearchUsers returns every user Pocket ID's search matches, a substring of
+// the username, the email or the names (service/user_service.go:60-61), so
+// callers compare exactly afterwards.
+func (c *Client) SearchUsers(search string) ([]User, error) {
+	return list[User](c, "/api/users", search)
+}
+
 // Users returns every user, each with its groups: ListUsers preloads them
 // (service/user_service.go:51-56).
 func (c *Client) Users() ([]User, error) {
@@ -470,6 +477,64 @@ func (c *Client) LoginToken(userID string, ttl time.Duration) (string, error) {
 		return "", errors.New("Pocket ID answered 201 without a token")
 	}
 	return out.Token, nil
+}
+
+// EmailLoginLink has Pocket ID email a user a one-time login link, valid for
+// ttl and for one sign in. POST /api/users/:id/one-time-access-email answers
+// 204 (onetimeaccess/module.go:69, handler.go:103-128) once the token is
+// stored, and sends the email afterwards, in the background
+// (onetimeaccess/service.go:105-133), so a 204 says nothing about the send. A
+// failed send is logged by Pocket ID as `Failed to send one-time access token
+// email` with the address; see EmailFailure. The token is Pocket ID's own and
+// is never returned, so the emailed link is not the one LoginToken returns.
+//
+// Pocket ID refuses it unless EMAIL_ONE_TIME_ACCESS_AS_ADMIN_ENABLED is true
+// (onetimeaccess/service.go:56-61), and for a user without an email
+// (:95-97).
+func (c *Client) EmailLoginLink(userID string, ttl time.Duration) error {
+	return c.do("POST", "/api/users/"+url.PathEscape(userID)+"/one-time-access-email", nil,
+		map[string]string{"ttl": ttl.String()}, nil, 204)
+}
+
+// AuditEvent is the part of dto.AuditLogDto (dto/audit_log_dto.go:7-20) read
+// here.
+type AuditEvent struct {
+	Event  string `json:"event"`
+	UserID string `json:"userID"`
+}
+
+// HasPasskey reports whether a user has ever registered a passkey: whether
+// the audit log holds a PASSKEY_ADDED event for them
+// (model/audit_log.go:38, written at webauthn/service.go:204). No admin route
+// lists another user's passkeys, so this is the one read that answers it.
+//
+// GET /api/audit-logs/all (controller/audit_log_controller.go:24) filters on
+// the model's filterable fields, Event and UserID (model/audit_log.go:10-22),
+// by the key the frontend sends, userID (audit-log-list.svelte:71); a key it
+// does not know is ignored rather than refused
+// (utils/list_request_util.go:132-146). So each row's user is checked as
+// well, and a filter that did not apply cannot answer for someone else.
+// Read only.
+func (c *Client) HasPasskey(userID string) (bool, error) {
+	for page := 1; ; page++ {
+		q := url.Values{}
+		q.Set("filters[userID]", userID)
+		q.Set("filters[event]", "PASSKEY_ADDED")
+		q.Set("pagination[page]", strconv.Itoa(page))
+		q.Set("pagination[limit]", strconv.Itoa(pageSize))
+		var got paginated[AuditEvent]
+		if err := c.do("GET", "/api/audit-logs/all", q, nil, &got, 200); err != nil {
+			return false, err
+		}
+		if slices.ContainsFunc(got.Data, func(e AuditEvent) bool {
+			return e.UserID == userID && e.Event == "PASSKEY_ADDED"
+		}) {
+			return true, nil
+		}
+		if page >= got.Pagination.TotalPages || len(got.Data) == 0 {
+			return false, nil
+		}
+	}
 }
 
 // LoginLink is where a one-time token is exchanged in a browser: the app's

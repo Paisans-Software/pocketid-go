@@ -300,3 +300,63 @@ func TestHasAdminFailsWithoutTheKey(t *testing.T) {
 		t.Fatalf("has %t, err %v", has, err)
 	}
 }
+
+// HasPasskey asks the audit log for the user's PASSKEY_ADDED events, filtered
+// by Pocket ID, and still checks the user on each row it returns.
+func TestHasPasskeyReadsTheUsersPasskeyEvents(t *testing.T) {
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
+		return 200, `{"data":[{"event":"PASSKEY_ADDED","userID":"u-1"}],"pagination":{"totalPages":1}}`
+	}}
+	has, err := newClient(f).HasPasskey("u-1")
+	if err != nil || !has {
+		t.Fatalf("HasPasskey = %v, %v", has, err)
+	}
+	r := f.requests[0]
+	q := r.URL.Query()
+	if r.Method != "GET" || r.URL.Path != "/api/audit-logs/all" ||
+		q.Get("filters[userID]") != "u-1" || q.Get("filters[event]") != "PASSKEY_ADDED" {
+		t.Errorf("sent %s %s", r.Method, r.URL)
+	}
+}
+
+// A row for another user, as an unapplied filter would return, is not this
+// user's passkey.
+func TestHasPasskeyIgnoresAnotherUsersEvent(t *testing.T) {
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
+		return 200, `{"data":[{"event":"PASSKEY_ADDED","userID":"u-2"},{"event":"SIGN_IN","userID":"u-1"}],"pagination":{"totalPages":1}}`
+	}}
+	has, err := newClient(f).HasPasskey("u-1")
+	if err != nil || has {
+		t.Fatalf("HasPasskey = %v, %v", has, err)
+	}
+}
+
+// EmailLoginLink asks Pocket ID to email the user a link of its own, with
+// the ttl, and expects 204.
+func TestEmailLoginLinkSendsTheTTL(t *testing.T) {
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) { return 204, `` }}
+	if err := newClient(f).EmailLoginLink("u-1", 24*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	r := f.requests[0]
+	if r.Method != "POST" || r.URL.Path != "/api/users/u-1/one-time-access-email" {
+		t.Errorf("sent %s %s", r.Method, r.URL)
+	}
+	var body map[string]string
+	if err := json.Unmarshal([]byte(r.Body), &body); err != nil || body["ttl"] != "24h0m0s" {
+		t.Errorf("body %q, want a 24h ttl", r.Body)
+	}
+}
+
+// Pocket ID refuses the email when its admin email setting is off; the
+// refusal comes back as Pocket ID's own message.
+func TestEmailLoginLinkRefused(t *testing.T) {
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
+		return 403, `{"error":"Email one-time access is disabled"}`
+	}}
+	err := newClient(f).EmailLoginLink("u-1", 24*time.Hour)
+	var apiErr *pocketid.APIError
+	if !errors.As(err, &apiErr) || apiErr.Status != 403 {
+		t.Fatalf("err = %v", err)
+	}
+}
