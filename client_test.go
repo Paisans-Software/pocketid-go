@@ -360,3 +360,38 @@ func TestEmailLoginLinkRefused(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+// A client secret is deleted by its ID under its client, and an ID Pocket ID
+// no longer holds is success, so a retirement interrupted after the delete
+// ends the same on the next run.
+func TestDeleteClientSecret(t *testing.T) {
+	held := true
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
+		if r.Method != "DELETE" || r.URL.Path != "/api/oidc/clients/c-1/secrets/s-1" {
+			t.Errorf("sent %s %s", r.Method, r.URL)
+		}
+		if !held {
+			return 404, `{"error":"Client secret not found"}`
+		}
+		held = false
+		return 204, ""
+	}}
+	c := newClient(f)
+	if err := c.DeleteClientSecret("c-1", "s-1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.DeleteClientSecret("c-1", "s-1"); err != nil {
+		t.Errorf("a second delete: %v", err)
+	}
+	if len(f.requests) != 2 {
+		t.Errorf("made %d requests", len(f.requests))
+	}
+}
+
+// Any other failure is one.
+func TestDeleteClientSecretFails(t *testing.T) {
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) { return 500, `{"error":"boom"}` }}
+	if err := newClient(f).DeleteClientSecret("c-1", "s-1"); err == nil {
+		t.Fatal("a 500 was not an error")
+	}
+}

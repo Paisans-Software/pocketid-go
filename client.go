@@ -759,6 +759,23 @@ func (c *Client) AddClientSecret(clientID, secret string) error {
 		map[string]string{"secret": secret}, nil, 201, secret)
 }
 
+// DeleteClientSecret deletes one of a client's secrets by its ID, so that a
+// value an app no longer presents stops being valid.
+// DELETE /api/oidc/clients/:id/secrets/:secretId answers 204
+// (controller/oidc_controller.go, deleteClientSecretHandler), and the service
+// answers apperror.NotFound, a 404, for a client or a secret it does not hold
+// (service/oidc_service.go, DeleteClientSecret), at tag v2.14.0. A 404 is
+// success here, so a run interrupted after the delete reaches the same end on
+// the next one. Nothing in the request or the answer carries a secret's value.
+func (c *Client) DeleteClientSecret(clientID, secretID string) error {
+	err := c.do("DELETE", "/api/oidc/clients/"+url.PathEscape(clientID)+"/secrets/"+url.PathEscape(secretID), nil, nil, nil, 204)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == 404 {
+		return nil
+	}
+	return err
+}
+
 // SecretPrefixLength is how much of a secret Pocket ID keeps in clear text
 // (model/oidc.go:43).
 const SecretPrefixLength = 4
