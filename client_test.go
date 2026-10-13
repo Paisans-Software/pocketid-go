@@ -395,3 +395,33 @@ func TestDeleteClientSecretFails(t *testing.T) {
 		t.Fatal("a 500 was not an error")
 	}
 }
+
+// SetClientName sends the client back as read with only the name changed,
+// the launch URL included, since the update would otherwise clear it.
+func TestSetClientNameKeepsTheLaunchURL(t *testing.T) {
+	current := `{"id":"c-1","name":"gate","callbackURLs":["https://gate.example.org/oauth2/callback"],
+		"launchURL":"https://gate.example.org","isPublic":false,"pkceEnabled":true,"isGroupRestricted":true,
+		"credentials":{"secrets":[{"id":"s-1","prefix":"abcd","isActive":true}]}}`
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
+		if r.Method == "GET" {
+			return 200, current
+		}
+		return 200, `{}`
+	}}
+	if err := newClient(f).SetClientName("c-1", "Example Community"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.requests) != 2 || f.requests[1].Method != "PUT" || f.requests[1].URL.Path != "/api/oidc/clients/c-1" {
+		t.Fatalf("requests %+v", f.requests)
+	}
+	var sent map[string]any
+	if err := json.Unmarshal([]byte(f.requests[1].Body), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if sent["name"] != "Example Community" || sent["launchURL"] != "https://gate.example.org" || sent["isGroupRestricted"] != true || sent["pkceEnabled"] != true {
+		t.Errorf("sent %v", sent)
+	}
+	if strings.Contains(f.requests[1].Body, "abcd") {
+		t.Errorf("the update carries secrets: %s", f.requests[1].Body)
+	}
+}

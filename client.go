@@ -673,25 +673,39 @@ var clientUpdateFields = []string{
 	"name", "description", "callbackURLs", "logoutCallbackURLs", "isPublic",
 	"pkceEnabled", "requiresReauthentication", "requiresPushedAuthorizationRequests",
 	"skipConsent", "isGroupRestricted", "accessTokenDurationMinutes",
-	"refreshTokenDurationMinutes",
+	"refreshTokenDurationMinutes", "launchURL",
 }
 
-// SetLaunchURL sets a client's launch URL and leaves the rest of it as it is.
+// SetLaunchURL sets a client's launch URL and leaves the rest of it as it is
+// (see updateClient).
+func (c *Client) SetLaunchURL(clientID, launchURL string) error {
+	return c.updateClient(clientID, "launchURL", launchURL)
+}
+
+// SetClientName renames a client and leaves the rest of it as it is (see
+// updateClient). The name is what Pocket ID shows a person signing in with
+// the client, and is how this toolkit finds the client again.
+func (c *Client) SetClientName(clientID, name string) error {
+	return c.updateClient(clientID, "name", name)
+}
+
+// updateClient sets one field of a client and leaves the rest of it as it is.
 //
 // PUT /api/oidc/clients/:id (controller/oidc_controller.go:32, :217-237)
 // overwrites every field it takes with what it is sent
 // (service/oidc_service.go:186-250, :252-294), so the client is read again
-// and every field sent back as read, with only launchURL changed. In
+// and every field sent back as read, with only the one field changed. In
 // particular: callback URLs, PKCE and the public flag are sent unchanged;
 // isGroupRestricted is sent unchanged, which matters because sending false
-// clears the allowed groups (:199-205); the federated credentials are sent
-// back, since the update replaces them (:282-292). Secrets are not sent and
-// would be ignored (dto/oidc_dto.go:93-94), and neither is a logo URL, which
-// is fetched only when one is sent (:235-247).
+// clears the allowed groups (:199-205); the launch URL is sent back, since
+// the update writes it too; the federated credentials are sent back, since
+// the update replaces them (:282-292). Secrets are not sent and would be
+// ignored (dto/oidc_dto.go:93-94), and neither is a logo URL, which is
+// fetched only when one is sent (:235-247).
 //
 // One side effect is Pocket ID's own: a client with PKCE off has its "PKCE
 // supported" hint cleared (:277-280), as saving it in the admin UI does.
-func (c *Client) SetLaunchURL(clientID, launchURL string) error {
+func (c *Client) updateClient(clientID, field, value string) error {
 	path := "/api/oidc/clients/" + url.PathEscape(clientID)
 	var current map[string]json.RawMessage
 	if err := c.do("GET", path, nil, nil, &current, 200); err != nil {
@@ -712,7 +726,7 @@ func (c *Client) SetLaunchURL(clientID, launchURL string) error {
 		}
 	}
 	body["credentials"] = creds
-	body["launchURL"] = launchURL
+	body[field] = value
 	return c.do("PUT", path, nil, body, nil, 200)
 }
 
