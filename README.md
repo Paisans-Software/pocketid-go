@@ -51,6 +51,17 @@ since what it resolves to can change between the check and the request. The
 error names the host and never the key. `Private` is exported, so a caller can
 check an address before it builds a client.
 
+A redirect is answered rather than followed, on either path, so the key never
+travels to an address the check did not see.
+
+## Changing a user
+
+`UpdateUser` reads the user and sends every field back as read, except those
+its `UserChange` sets: the email and its verification, the names, and
+whether the user is disabled. The username, the admin flag and the locale are
+not in `UserChange`, so this call cannot change them. A user an LDAP sync
+manages is refused, since Pocket ID takes only a locale for one.
+
 ## Contexts
 
 Every method takes a `context.Context` first. On the `HTTP` path a cancelled

@@ -204,6 +204,37 @@ func exercise(t *testing.T, c *pocketid.Client, suffix string) {
 
 	must(c.DeleteOIDCClient(ctx, created.ID))
 	must(c.DeleteOIDCClient(ctx, created.ID))
+
+	empty, err := c.CreateGroup(ctx, "empty-"+suffix)
+	must(err)
+	all, err := c.Groups(ctx)
+	must(err)
+	seen := map[string]bool{}
+	for _, g := range all {
+		seen[g.ID] = true
+	}
+	if !seen[group.ID] || !seen[empty.ID] {
+		t.Errorf("Groups missed one: %+v", all)
+	}
+
+	// UpdateUser on an administrator: the fields asked for change, and the
+	// username, the admin flag and the groups stay as they were.
+	must(c.SetAdmin(ctx, read))
+	newEmail := "fern.g-" + suffix + "@example.org"
+	verified, disabled := true, true
+	display := "Fern G."
+	updated, err := c.UpdateUser(ctx, fern.ID, pocketid.UserChange{
+		Email: &newEmail, EmailVerified: &verified, DisplayName: &display, Disabled: &disabled,
+	})
+	must(err)
+	again, err := c.User(ctx, fern.ID)
+	must(err)
+	for _, u := range []pocketid.User{updated, again} {
+		if u.Email == nil || *u.Email != newEmail || !u.EmailVerified || u.DisplayName != display || !u.Disabled ||
+			u.Username != "fern-"+suffix || !u.IsAdmin || u.FirstName != "Fern" || !u.InGroup(group.ID) {
+			t.Errorf("after UpdateUser: %+v", u)
+		}
+	}
 	gone, err := c.OIDCClientByID(ctx, created.ID)
 	must(err)
 	if gone != nil {
