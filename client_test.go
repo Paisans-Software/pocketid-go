@@ -1,13 +1,14 @@
 package pocketid_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/paisans-software/paisans-stack/internal/pocketid"
+	"github.com/paisans-software/pocketid-go"
 )
 
 // Every request is the same command line, and the key, the URL and the body
@@ -16,7 +17,7 @@ func TestEveryRequestIsTheSameCommandLine(t *testing.T) {
 	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
 		return 201, `{"token":"tok-not-real-0001"}`
 	}}
-	if _, err := newClient(f).LoginToken("u-1", 15*time.Minute); err != nil {
+	if _, err := newClient(f).LoginToken(context.Background(), "u-1", 15*time.Minute); err != nil {
 		t.Fatal(err)
 	}
 	for _, c := range f.commands {
@@ -45,7 +46,7 @@ func TestEveryRequestIsTheSameCommandLine(t *testing.T) {
 func TestConfigQuotingSurvivesHostileValues(t *testing.T) {
 	hostile := "x\"\nurl = \"http://elsewhere\\"
 	f := &fakeAPI{t: t, handle: func(r request) (int, string) { return 201, `{}` }}
-	if _, err := newClient(f).CreateGroup(hostile); err != nil {
+	if _, err := newClient(f).CreateGroup(context.Background(), hostile); err != nil {
 		t.Fatal(err)
 	}
 	r := f.requests[0]
@@ -73,7 +74,7 @@ func TestFindUserMatchesExactlyAcrossPages(t *testing.T) {
 		}
 		return 200, `{"data":[{"id":"u-1","username":"founder","isAdmin":true}],"pagination":{"totalPages":2}}`
 	}}
-	u, err := newClient(f).FindUser("founder")
+	u, err := newClient(f).FindUser(context.Background(), "founder")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +93,7 @@ func TestErrorsNeverCarryTheKeyOrASecret(t *testing.T) {
 	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
 		return 400, `{"error":"bad secret ` + secret + ` for key ` + apiKey + `"}`
 	}}
-	err := newClient(f).AddClientSecret("c-1", secret)
+	err := newClient(f).AddClientSecret(context.Background(), "c-1", secret)
 	var apiErr *pocketid.APIError
 	if err == nil {
 		t.Fatal("a 400 was not an error")
@@ -111,7 +112,7 @@ func TestErrorsNeverCarryTheKeyOrASecret(t *testing.T) {
 // A transport error that echoes its input cannot carry the key out either.
 func TestTransportErrorsAreRedacted(t *testing.T) {
 	c := &pocketid.Client{Transport: echoFailure{}, BaseURL: "http://10.44.0.1:1411", APIKey: apiKey}
-	_, err := c.FindUser("founder")
+	_, err := c.FindUser(context.Background(), "founder")
 	if err == nil || strings.Contains(err.Error(), apiKey) {
 		t.Fatalf("got %v", err)
 	}
@@ -127,7 +128,7 @@ func (echoFailure) RunInput(_, stdin string) (string, error) {
 // No status line means curl never got an answer, which is not a 200.
 func TestNoStatusIsAnError(t *testing.T) {
 	c := &pocketid.Client{Transport: silent{}, BaseURL: "http://10.44.0.1:1411", APIKey: apiKey}
-	if _, err := c.FindGroup("admins"); err == nil {
+	if _, err := c.FindGroup(context.Background(), "admins"); err == nil {
 		t.Fatal("no answer was read as success")
 	}
 }
@@ -160,7 +161,7 @@ func TestNoKeyIsRefusedBeforeAnyRequest(t *testing.T) {
 	f := &fakeAPI{t: t, handle: func(r request) (int, string) { return 200, `{}` }}
 	c := newClient(f)
 	c.APIKey = ""
-	if _, err := c.FindUser("founder"); err == nil || !strings.Contains(err.Error(), "static_api_key") {
+	if _, err := c.FindUser(context.Background(), "founder"); !errors.Is(err, pocketid.ErrNoAPIKey) {
 		t.Fatalf("got %v", err)
 	}
 	if len(f.requests) != 0 {
@@ -184,7 +185,7 @@ func TestSetLaunchURLSendsTheClientBackUnchanged(t *testing.T) {
 		}
 		return 200, `{}`
 	}}
-	if err := newClient(f).SetLaunchURL("c-1", "https://talk.example.org"); err != nil {
+	if err := newClient(f).SetLaunchURL(context.Background(), "c-1", "https://talk.example.org"); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.requests) != 2 || f.requests[1].Method != "PUT" || f.requests[1].URL.Path != "/api/oidc/clients/c-1" {
@@ -233,17 +234,17 @@ func TestClientByIDAndDelete(t *testing.T) {
 		}
 	}}
 	c := newClient(f)
-	got, err := c.OIDCClientByID("c-1")
+	got, err := c.OIDCClientByID(context.Background(), "c-1")
 	if err != nil || got == nil || got.Name != "docs" {
 		t.Fatalf("OIDCClientByID = %+v, %v", got, err)
 	}
-	if err := c.DeleteOIDCClient("c-1"); err != nil {
+	if err := c.DeleteOIDCClient(context.Background(), "c-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.DeleteOIDCClient("c-1"); err != nil {
+	if err := c.DeleteOIDCClient(context.Background(), "c-1"); err != nil {
 		t.Errorf("a second delete: %v", err)
 	}
-	if got, err := c.OIDCClientByID("c-1"); err != nil || got != nil {
+	if got, err := c.OIDCClientByID(context.Background(), "c-1"); err != nil || got != nil {
 		t.Errorf("after the delete: %+v, %v", got, err)
 	}
 }
@@ -263,7 +264,7 @@ func TestHasAdminStopsAtTheFirstAdmin(t *testing.T) {
 		}
 		return 200, `{"data":[{"id":"u-2","username":"later"}],"pagination":{"totalPages":3}}`
 	}}
-	has, err := newClient(f).HasAdmin()
+	has, err := newClient(f).HasAdmin(context.Background())
 	if err != nil || !has {
 		t.Fatalf("has %t, err %v", has, err)
 	}
@@ -280,7 +281,7 @@ func TestHasAdminReadsEveryPageWhenThereIsNone(t *testing.T) {
 		}
 		return 200, `{"data":[{"id":"u-1","username":"other"}],"pagination":{"totalPages":2}}`
 	}}
-	has, err := newClient(f).HasAdmin()
+	has, err := newClient(f).HasAdmin(context.Background())
 	if err != nil || has {
 		t.Fatalf("has %t, err %v", has, err)
 	}
@@ -295,7 +296,7 @@ func TestHasAdminFailsWithoutTheKey(t *testing.T) {
 	f := &fakeAPI{t: t, handle: func(request) (int, string) {
 		return 401, `{"error":"bad key ` + apiKey + `"}`
 	}}
-	has, err := newClient(f).HasAdmin()
+	has, err := newClient(f).HasAdmin(context.Background())
 	if err == nil || has || strings.Contains(err.Error(), apiKey) {
 		t.Fatalf("has %t, err %v", has, err)
 	}
@@ -307,7 +308,7 @@ func TestHasPasskeyReadsTheUsersPasskeyEvents(t *testing.T) {
 	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
 		return 200, `{"data":[{"event":"PASSKEY_ADDED","userID":"u-1"}],"pagination":{"totalPages":1}}`
 	}}
-	has, err := newClient(f).HasPasskey("u-1")
+	has, err := newClient(f).HasPasskey(context.Background(), "u-1")
 	if err != nil || !has {
 		t.Fatalf("HasPasskey = %v, %v", has, err)
 	}
@@ -325,7 +326,7 @@ func TestHasPasskeyIgnoresAnotherUsersEvent(t *testing.T) {
 	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
 		return 200, `{"data":[{"event":"PASSKEY_ADDED","userID":"u-2"},{"event":"SIGN_IN","userID":"u-1"}],"pagination":{"totalPages":1}}`
 	}}
-	has, err := newClient(f).HasPasskey("u-1")
+	has, err := newClient(f).HasPasskey(context.Background(), "u-1")
 	if err != nil || has {
 		t.Fatalf("HasPasskey = %v, %v", has, err)
 	}
@@ -335,7 +336,7 @@ func TestHasPasskeyIgnoresAnotherUsersEvent(t *testing.T) {
 // the ttl, and expects 204.
 func TestEmailLoginLinkSendsTheTTL(t *testing.T) {
 	f := &fakeAPI{t: t, handle: func(r request) (int, string) { return 204, `` }}
-	if err := newClient(f).EmailLoginLink("u-1", 24*time.Hour); err != nil {
+	if err := newClient(f).EmailLoginLink(context.Background(), "u-1", 24*time.Hour); err != nil {
 		t.Fatal(err)
 	}
 	r := f.requests[0]
@@ -354,7 +355,7 @@ func TestEmailLoginLinkRefused(t *testing.T) {
 	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
 		return 403, `{"error":"Email one-time access is disabled"}`
 	}}
-	err := newClient(f).EmailLoginLink("u-1", 24*time.Hour)
+	err := newClient(f).EmailLoginLink(context.Background(), "u-1", 24*time.Hour)
 	var apiErr *pocketid.APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != 403 {
 		t.Fatalf("err = %v", err)
@@ -377,10 +378,10 @@ func TestDeleteClientSecret(t *testing.T) {
 		return 204, ""
 	}}
 	c := newClient(f)
-	if err := c.DeleteClientSecret("c-1", "s-1"); err != nil {
+	if err := c.DeleteClientSecret(context.Background(), "c-1", "s-1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.DeleteClientSecret("c-1", "s-1"); err != nil {
+	if err := c.DeleteClientSecret(context.Background(), "c-1", "s-1"); err != nil {
 		t.Errorf("a second delete: %v", err)
 	}
 	if len(f.requests) != 2 {
@@ -391,7 +392,7 @@ func TestDeleteClientSecret(t *testing.T) {
 // Any other failure is one.
 func TestDeleteClientSecretFails(t *testing.T) {
 	f := &fakeAPI{t: t, handle: func(r request) (int, string) { return 500, `{"error":"boom"}` }}
-	if err := newClient(f).DeleteClientSecret("c-1", "s-1"); err == nil {
+	if err := newClient(f).DeleteClientSecret(context.Background(), "c-1", "s-1"); err == nil {
 		t.Fatal("a 500 was not an error")
 	}
 }
@@ -408,7 +409,7 @@ func TestSetClientNameKeepsTheLaunchURL(t *testing.T) {
 		}
 		return 200, `{}`
 	}}
-	if err := newClient(f).SetClientName("c-1", "Example Community"); err != nil {
+	if err := newClient(f).SetClientName(context.Background(), "c-1", "Example Community"); err != nil {
 		t.Fatal(err)
 	}
 	if len(f.requests) != 2 || f.requests[1].Method != "PUT" || f.requests[1].URL.Path != "/api/oidc/clients/c-1" {
