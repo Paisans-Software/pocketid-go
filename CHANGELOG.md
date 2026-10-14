@@ -5,6 +5,8 @@ All notable changes to this project are documented here, in the
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-14
+
 ### Added
 
 - A Go client for Pocket ID v2's REST API with its static API key, over HTTP or through curl on a host.
