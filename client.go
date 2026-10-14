@@ -184,6 +184,10 @@ func (c *Client) send(ctx context.Context, method, path string, query url.Values
 	if client.Timeout == 0 {
 		client.Timeout = 30 * time.Second
 	}
+	// A redirect is answered, never followed. net/http would follow it with
+	// X-API-Key still set, which would take the key to an address the private
+	// check never saw; curl, on the Transport path, follows none either.
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {
 		return 0, "", fmt.Errorf("%s %s: Pocket ID did not answer: %w", method, path, err)
@@ -446,6 +450,73 @@ func (c *Client) VerifyEmail(ctx context.Context, u User) error {
 	return c.updateUser(ctx, u)
 }
 
+// UserChange is what UpdateUser may change about a user. A nil field is left
+// as Pocket ID holds it. The username, the admin flag and the locale are not
+// here, so no caller of UpdateUser can change them.
+type UserChange struct {
+	Email         *string
+	EmailVerified *bool
+	FirstName     *string
+	LastName      *string
+	DisplayName   *string
+	Disabled      *bool
+}
+
+func (ch UserChange) empty() bool {
+	return ch == UserChange{}
+}
+
+// UpdateUser reads the user, changes only the fields change sets, and sends
+// every other field back as it was read (see updateUser), so the read and
+// the write are one call and no field can be sent from anywhere but Pocket
+// ID's own answer. It returns the user Pocket ID holds afterwards, with the
+// groups it read, since this route does not return them. A change
+// that sets nothing sends nothing and returns the user as read.
+//
+// An administrator's update stores emailVerified as sent, after Pocket ID has
+// reset it for a changed email (service/user_service.go:544-555 at v2.18.0),
+// so Email and EmailVerified set together keep the address verified. A user
+// an LDAP sync manages takes only a locale from this route (:530-536), so
+// UpdateUser refuses one rather than report a change Pocket ID did not make.
+func (c *Client) UpdateUser(ctx context.Context, id string, change UserChange) (User, error) {
+	u, err := c.User(ctx, id)
+	if err != nil {
+		return User{}, err
+	}
+	if change.empty() {
+		return u, nil
+	}
+	if u.LdapID != nil {
+		return User{}, fmt.Errorf("user %s is managed by LDAP, and Pocket ID takes only a locale for one", u.Username)
+	}
+	if change.Email != nil {
+		u.Email = change.Email
+	}
+	if change.EmailVerified != nil {
+		u.EmailVerified = *change.EmailVerified
+	}
+	if change.FirstName != nil {
+		u.FirstName = *change.FirstName
+	}
+	if change.LastName != nil {
+		u.LastName = change.LastName
+	}
+	if change.DisplayName != nil {
+		u.DisplayName = *change.DisplayName
+	}
+	if change.Disabled != nil {
+		u.Disabled = *change.Disabled
+	}
+	var out User
+	if err := c.put(ctx, u, &out); err != nil {
+		return User{}, err
+	}
+	// The update's answer leaves out the user's groups, which the update
+	// neither reads nor writes, so they are the ones read before it.
+	out.UserGroups = u.UserGroups
+	return out, nil
+}
+
 // updateUser sends a user back as given.
 //
 // PUT /api/users/:id (controller/user_controller.go:34, :279-281, :430-440)
@@ -455,6 +526,12 @@ func (c *Client) VerifyEmail(ctx context.Context, u User) error {
 // exactly as read and sends the rest unchanged. Sending only the one field
 // would blank the name.
 func (c *Client) updateUser(ctx context.Context, u User) error {
+	return c.put(ctx, u, nil)
+}
+
+// put is updateUser's request, decoding Pocket ID's answer into out when it
+// is not nil.
+func (c *Client) put(ctx context.Context, u User, out *User) error {
 	lastName := ""
 	if u.LastName != nil {
 		lastName = *u.LastName
@@ -470,7 +547,11 @@ func (c *Client) updateUser(ctx context.Context, u User) error {
 		"locale":        u.Locale,
 		"disabled":      u.Disabled,
 	}
-	return c.do(ctx, "PUT", "/api/users/"+url.PathEscape(u.ID), nil, body, nil, 200)
+	var into any
+	if out != nil {
+		into = out
+	}
+	return c.do(ctx, "PUT", "/api/users/"+url.PathEscape(u.ID), nil, body, into, 200)
 }
 
 // LoginToken issues a one-time access token for a user, valid for ttl and for
@@ -574,6 +655,13 @@ func (c *Client) FindGroup(ctx context.Context, name string) (*Group, error) {
 		}
 	}
 	return nil, nil
+}
+
+// Groups returns every group, empty ones included, reading GET
+// /api/user-groups (controller/user_group_controller.go:29) page by page to
+// the last.
+func (c *Client) Groups(ctx context.Context) ([]Group, error) {
+	return list[Group](ctx, c, "/api/user-groups", "")
 }
 
 // ValidGroupName is whether CreateGroup's request would pass Pocket ID
