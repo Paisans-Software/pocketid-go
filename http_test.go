@@ -1,13 +1,14 @@
 package pocketid_test
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
-	"github.com/paisans-software/paisans-stack/internal/pocketid"
+	"github.com/paisans-software/pocketid-go"
 )
 
 // With HTTP set, a request goes straight to BaseURL with the same method,
@@ -27,7 +28,7 @@ func TestHTTPModeSendsTheRequestDirectly(t *testing.T) {
 	defer srv.Close()
 
 	c := &pocketid.Client{HTTP: srv.Client(), BaseURL: srv.URL + "/", APIKey: "key-0123456789abcdef"}
-	if err := c.SetUserGroups("u 1", []string{"g1", "g2"}); err != nil {
+	if err := c.SetUserGroups(context.Background(), "u 1", []string{"g1", "g2"}); err != nil {
 		t.Fatal(err)
 	}
 	if got.method != "PUT" || got.path != "/api/users/u 1/user-groups" {
@@ -58,14 +59,14 @@ func TestHTTPModeListsUsersAndReadsOne(t *testing.T) {
 	defer srv.Close()
 
 	c := &pocketid.Client{HTTP: srv.Client(), BaseURL: srv.URL, APIKey: "key-0123456789abcdef"}
-	users, err := c.Users()
+	users, err := c.Users(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(users) != 2 || users[0].Username != "alice" || users[1].Username != "bob" {
 		t.Fatalf("users %+v", users)
 	}
-	u, err := c.User("a")
+	u, err := c.User(context.Background(), "a")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +83,7 @@ func TestHTTPModeErrorsAreRedacted(t *testing.T) {
 	}))
 	defer srv.Close()
 	c := &pocketid.Client{HTTP: srv.Client(), BaseURL: srv.URL, APIKey: "key-0123456789abcdef"}
-	_, err := c.Users()
+	_, err := c.Users(context.Background())
 	if err == nil || strings.Contains(err.Error(), "key-0123456789abcdef") || !strings.Contains(err.Error(), "403") {
 		t.Fatalf("want a redacted 403, got %v", err)
 	}
@@ -95,7 +96,7 @@ func TestHTTPModeNoAnswerIsAnError(t *testing.T) {
 	url := srv.URL
 	srv.Close()
 	c := &pocketid.Client{HTTP: &http.Client{}, BaseURL: url, APIKey: "key-0123456789abcdef"}
-	if _, err := c.Users(); err == nil || !strings.Contains(err.Error(), "GET /api/users") {
+	if _, err := c.Users(context.Background()); err == nil || !strings.Contains(err.Error(), "GET /api/users") {
 		t.Fatalf("want an error naming the request, got %v", err)
 	}
 }

@@ -1,30 +1,37 @@
-// Package pocketid calls a running Pocket ID's REST API from the workstation,
-// through curl on the host it runs on.
+// Package pocketid calls a running Pocket ID's REST API with its static API
+// key.
 //
 // Every route, payload and status code here was read from Pocket ID's source
 // at tag v2.14.0 (github.com/pocket-id/pocket-id); each method cites where.
 //
-// The request goes over the operator's own ssh to the site, where curl calls
-// the port Pocket ID publishes on that site's mesh address. Everything that
-// varies, the URL, the API key and the body, travels in a curl config on
-// stdin (`curl --config -`), so the command line is the same constant for
-// every request and carries nothing: a command line is in the process table,
-// readable by every user on the host, for as long as it runs.
+// A Client reaches Pocket ID one of two ways. With HTTP set, it sends each
+// request straight to BaseURL, for code running beside Pocket ID. Otherwise
+// it runs curl on a host through a Transport, such as an ssh connection, and
+// curl calls BaseURL from there. Everything that varies, the URL, the API key
+// and the body, travels to curl in a config on stdin (`curl --config -`), so
+// the command line is the same constant for every request and carries
+// nothing: a command line is in the process table, readable by every user on
+// the host, for as long as it runs.
 //
-// Rejected: an API key file on the host for an operator's curl. It would be a
-// second long lived copy of an admin credential, outside the rendered set that
-// apply owns and audits, and readable by whoever can read that file rather
-// than only by whoever holds the age key to the secrets file.
+// The key goes only to a private address (see Private): it is an
+// administrator's credential, and Pocket ID's API answers wherever its port
+// is reachable.
+//
+// Every method takes a context. The HTTP path cancels the request with it;
+// the Transport path checks it before each request, since a Transport cannot
+// stop a curl that has started.
 package pocketid
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"slices"
 	"strconv"
@@ -33,9 +40,9 @@ import (
 	"unicode/utf8"
 )
 
-// Transport is the part of an ssh transport this package uses. It is declared
-// here so the package depends on the shape and not on apply;
-// apply.SSHTransport satisfies it.
+// Transport runs a command on a host with stdin, the way an ssh connection
+// does. It is declared here so this package depends on the shape and not on
+// whatever provides it.
 type Transport interface {
 	RunInput(command, stdin string) (string, error)
 	Describe() string
@@ -51,20 +58,26 @@ const CurlCommand = "curl --silent --show-error --globoff --config -"
 
 // statusMarker precedes the HTTP status curl writes after the body, so a body
 // that happens to end in three digits cannot be mistaken for it.
-const statusMarker = "\npaisans-http-status:"
+const statusMarker = "\npocketid-http-status:"
 
 // Client is one Pocket ID, reached at BaseURL from the host the Transport
-// reaches. BaseURL is the published mesh port, as in http://10.44.0.1:1411.
+// reaches, as in http://10.44.0.1:1411.
 //
 // HTTP, when set, sends each request straight to BaseURL instead, and
-// Transport is not used. That is for code running beside Pocket ID on the
-// mesh, such as the operator reconciler, which has no ssh to go through.
+// Transport is not used. That is for code running beside Pocket ID, which has
+// no host to go through.
 type Client struct {
 	Transport Transport
 	HTTP      *http.Client
 	BaseURL   string
 	APIKey    string
+	// Networks are private networks besides the ones Private always accepts,
+	// such as a mesh whose addresses are not in a private range.
+	Networks []netip.Prefix
 }
+
+// ErrNoAPIKey is returned, before any request, by a client without a key.
+var ErrNoAPIKey = errors.New("no API key for Pocket ID")
 
 // APIError is a response outside the status a call expected. Message is
 // Pocket ID's own `error` field (dto/error_dto.go:6-10) when it sent one.
@@ -85,13 +98,22 @@ func (e *APIError) Error() string {
 // do sends one request and decodes a response with the wanted status into
 // out. secrets are any values in the body besides the API key; every one is
 // scrubbed from an error before it is returned.
-func (c *Client) do(method, path string, query url.Values, body, out any, want int, secrets ...string) error {
+func (c *Client) do(ctx context.Context, method, path string, query url.Values, body, out any, want int, secrets ...string) error {
 	secrets = append(secrets, c.APIKey)
+	if c.APIKey == "" {
+		return ErrNoAPIKey
+	}
+	if err := c.private(); err != nil {
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("%s %s: %w", method, path, err)
+	}
 	var status int
 	var payload string
 	var err error
 	if c.HTTP != nil {
-		status, payload, err = c.send(method, path, query, body)
+		status, payload, err = c.send(ctx, method, path, query, body)
 	} else {
 		status, payload, err = c.curl(method, path, query, body)
 	}
@@ -136,10 +158,7 @@ func (c *Client) curl(method, path string, query url.Values, body any) (int, str
 
 // send sends one request with HTTP, carrying what config gives curl: the key,
 // JSON both ways, and a 30 second limit when the client sets none.
-func (c *Client) send(method, path string, query url.Values, body any) (int, string, error) {
-	if c.APIKey == "" {
-		return 0, "", errors.New("no API key: set apps.<pocket-id app>.static_api_key with `paisans init` and apply it")
-	}
+func (c *Client) send(ctx context.Context, method, path string, query url.Values, body any) (int, string, error) {
 	target := strings.TrimRight(c.BaseURL, "/") + path
 	if len(query) > 0 {
 		target += "?" + query.Encode()
@@ -152,7 +171,7 @@ func (c *Client) send(method, path string, query url.Values, body any) (int, str
 		}
 		reader = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequest(method, target, reader)
+	req, err := http.NewRequestWithContext(ctx, method, target, reader)
 	if err != nil {
 		return 0, "", fmt.Errorf("%s %s: %w", method, path, err)
 	}
@@ -181,9 +200,6 @@ func (c *Client) send(method, path string, query url.Values, body any) (int, str
 // string, in which curl reads \\ and \" as escapes, so nothing a value holds
 // can end its line and start another option.
 func (c *Client) config(method, path string, query url.Values, body any) (string, error) {
-	if c.APIKey == "" {
-		return "", errors.New("no API key: set apps.<pocket-id app>.static_api_key with `paisans init` and apply it")
-	}
 	target := strings.TrimRight(c.BaseURL, "/") + path
 	if len(query) > 0 {
 		target += "?" + query.Encode()
@@ -266,9 +282,9 @@ type paginated[T any] struct {
 
 // list walks every page of a list route filtered by search. Pocket ID's search
 // is a substring match (LIKE '%term%'), so callers compare exactly afterwards.
-func list[T any](c *Client, path, search string) ([]T, error) {
+func list[T any](ctx context.Context, c *Client, path, search string) ([]T, error) {
 	var out []T
-	err := pages(c, path, search, func(data []T) bool {
+	err := pages(ctx, c, path, search, func(data []T) bool {
 		out = append(out, data...)
 		return false
 	})
@@ -280,14 +296,14 @@ func list[T any](c *Client, path, search string) ([]T, error) {
 
 // pages hands each page of a list route filtered by search to visit, in
 // order, until visit returns true or the last page has been read.
-func pages[T any](c *Client, path, search string, visit func([]T) bool) error {
+func pages[T any](ctx context.Context, c *Client, path, search string, visit func([]T) bool) error {
 	for page := 1; ; page++ {
 		q := url.Values{}
 		q.Set("search", search)
 		q.Set("pagination[page]", strconv.Itoa(page))
 		q.Set("pagination[limit]", strconv.Itoa(pageSize))
 		var got paginated[T]
-		if err := c.do("GET", path, q, nil, &got, 200); err != nil {
+		if err := c.do(ctx, "GET", path, q, nil, &got, 200); err != nil {
 			return err
 		}
 		if visit(got.Data) || page >= got.Pagination.TotalPages || len(got.Data) == 0 {
@@ -348,8 +364,8 @@ type NewUser struct {
 
 // FindUser returns the user with exactly this username, or nil.
 // GET /api/users (controller/user_controller.go:30, :123-142).
-func (c *Client) FindUser(username string) (*User, error) {
-	users, err := list[User](c, "/api/users", username)
+func (c *Client) FindUser(ctx context.Context, username string) (*User, error) {
+	users, err := list[User](ctx, c, "/api/users", username)
 	if err != nil {
 		return nil, err
 	}
@@ -364,21 +380,21 @@ func (c *Client) FindUser(username string) (*User, error) {
 // SearchUsers returns every user Pocket ID's search matches, a substring of
 // the username, the email or the names (service/user_service.go:60-61), so
 // callers compare exactly afterwards.
-func (c *Client) SearchUsers(search string) ([]User, error) {
-	return list[User](c, "/api/users", search)
+func (c *Client) SearchUsers(ctx context.Context, search string) ([]User, error) {
+	return list[User](ctx, c, "/api/users", search)
 }
 
 // Users returns every user, each with its groups: ListUsers preloads them
 // (service/user_service.go:51-56).
-func (c *Client) Users() ([]User, error) {
-	return list[User](c, "/api/users", "")
+func (c *Client) Users(ctx context.Context) ([]User, error) {
+	return list[User](ctx, c, "/api/users", "")
 }
 
 // HasAdmin reports whether any user is an admin, reading GET /api/users page
 // by page and stopping at the first that is. Read only.
-func (c *Client) HasAdmin() (bool, error) {
+func (c *Client) HasAdmin(ctx context.Context) (bool, error) {
 	found := false
-	err := pages(c, "/api/users", "", func(users []User) bool {
+	err := pages(ctx, c, "/api/users", "", func(users []User) bool {
 		found = slices.ContainsFunc(users, func(u User) bool { return u.IsAdmin })
 		return found
 	})
@@ -391,30 +407,30 @@ func (c *Client) HasAdmin() (bool, error) {
 // User reads one user with its groups. GET /api/users/:id
 // (controller/user_controller.go:32; service/user_service.go:70-80 preloads
 // UserGroups).
-func (c *Client) User(id string) (User, error) {
+func (c *Client) User(ctx context.Context, id string) (User, error) {
 	var out User
-	err := c.do("GET", "/api/users/"+url.PathEscape(id), nil, nil, &out, 200)
+	err := c.do(ctx, "GET", "/api/users/"+url.PathEscape(id), nil, nil, &out, 200)
 	return out, err
 }
 
 // CreateUser creates a user. POST /api/users answers 201 with the user
 // (controller/user_controller.go:33, :266).
-func (c *Client) CreateUser(u NewUser) (User, error) {
+func (c *Client) CreateUser(ctx context.Context, u NewUser) (User, error) {
 	var out User
-	err := c.do("POST", "/api/users", nil, u, &out, 201)
+	err := c.do(ctx, "POST", "/api/users", nil, u, &out, 201)
 	return out, err
 }
 
 // SetAdmin makes an existing user an administrator. See updateUser.
-func (c *Client) SetAdmin(u User) error {
+func (c *Client) SetAdmin(ctx context.Context, u User) error {
 	u.IsAdmin = true
-	return c.updateUser(u)
+	return c.updateUser(ctx, u)
 }
 
 // Demote makes an existing administrator an ordinary user. See updateUser.
-func (c *Client) Demote(u User) error {
+func (c *Client) Demote(ctx context.Context, u User) error {
 	u.IsAdmin = false
-	return c.updateUser(u)
+	return c.updateUser(ctx, u)
 }
 
 // VerifyEmail marks an existing user's email address verified, so the ID
@@ -425,9 +441,9 @@ func (c *Client) Demote(u User) error {
 // resetting verification to the EMAILS_VERIFIED setting, applies only when the
 // email changes (service/user_service.go:507-510), and the email is sent back
 // unchanged.
-func (c *Client) VerifyEmail(u User) error {
+func (c *Client) VerifyEmail(ctx context.Context, u User) error {
 	u.EmailVerified = true
-	return c.updateUser(u)
+	return c.updateUser(ctx, u)
 }
 
 // updateUser sends a user back as given.
@@ -438,7 +454,7 @@ func (c *Client) VerifyEmail(u User) error {
 // (service/user_service.go:495-519), so a caller changes one field of the user
 // exactly as read and sends the rest unchanged. Sending only the one field
 // would blank the name.
-func (c *Client) updateUser(u User) error {
+func (c *Client) updateUser(ctx context.Context, u User) error {
 	lastName := ""
 	if u.LastName != nil {
 		lastName = *u.LastName
@@ -454,7 +470,7 @@ func (c *Client) updateUser(u User) error {
 		"locale":        u.Locale,
 		"disabled":      u.Disabled,
 	}
-	return c.do("PUT", "/api/users/"+url.PathEscape(u.ID), nil, body, nil, 200)
+	return c.do(ctx, "PUT", "/api/users/"+url.PathEscape(u.ID), nil, body, nil, 200)
 }
 
 // LoginToken issues a one-time access token for a user, valid for ttl and for
@@ -465,11 +481,11 @@ func (c *Client) updateUser(u User) error {
 //
 // The token is a credential. It is returned to the caller and never put into
 // an error.
-func (c *Client) LoginToken(userID string, ttl time.Duration) (string, error) {
+func (c *Client) LoginToken(ctx context.Context, userID string, ttl time.Duration) (string, error) {
 	var out struct {
 		Token string `json:"token"`
 	}
-	err := c.do("POST", "/api/users/"+url.PathEscape(userID)+"/one-time-access-token", nil,
+	err := c.do(ctx, "POST", "/api/users/"+url.PathEscape(userID)+"/one-time-access-token", nil,
 		map[string]string{"ttl": ttl.String()}, &out, 201)
 	if err != nil {
 		return "", err
@@ -492,8 +508,8 @@ func (c *Client) LoginToken(userID string, ttl time.Duration) (string, error) {
 // Pocket ID refuses it unless EMAIL_ONE_TIME_ACCESS_AS_ADMIN_ENABLED is true
 // (onetimeaccess/service.go:56-61), and for a user without an email
 // (:95-97).
-func (c *Client) EmailLoginLink(userID string, ttl time.Duration) error {
-	return c.do("POST", "/api/users/"+url.PathEscape(userID)+"/one-time-access-email", nil,
+func (c *Client) EmailLoginLink(ctx context.Context, userID string, ttl time.Duration) error {
+	return c.do(ctx, "POST", "/api/users/"+url.PathEscape(userID)+"/one-time-access-email", nil,
 		map[string]string{"ttl": ttl.String()}, nil, 204)
 }
 
@@ -516,7 +532,7 @@ type AuditEvent struct {
 // (utils/list_request_util.go:132-146). So each row's user is checked as
 // well, and a filter that did not apply cannot answer for someone else.
 // Read only.
-func (c *Client) HasPasskey(userID string) (bool, error) {
+func (c *Client) HasPasskey(ctx context.Context, userID string) (bool, error) {
 	for page := 1; ; page++ {
 		q := url.Values{}
 		q.Set("filters[userID]", userID)
@@ -524,7 +540,7 @@ func (c *Client) HasPasskey(userID string) (bool, error) {
 		q.Set("pagination[page]", strconv.Itoa(page))
 		q.Set("pagination[limit]", strconv.Itoa(pageSize))
 		var got paginated[AuditEvent]
-		if err := c.do("GET", "/api/audit-logs/all", q, nil, &got, 200); err != nil {
+		if err := c.do(ctx, "GET", "/api/audit-logs/all", q, nil, &got, 200); err != nil {
 			return false, err
 		}
 		if slices.ContainsFunc(got.Data, func(e AuditEvent) bool {
@@ -547,8 +563,8 @@ func LoginLink(publicURL, token string) string {
 
 // FindGroup returns the group with exactly this name, or nil.
 // GET /api/user-groups (controller/user_group_controller.go:29).
-func (c *Client) FindGroup(name string) (*Group, error) {
-	groups, err := list[Group](c, "/api/user-groups", name)
+func (c *Client) FindGroup(ctx context.Context, name string) (*Group, error) {
+	groups, err := list[Group](ctx, c, "/api/user-groups", name)
 	if err != nil {
 		return nil, err
 	}
@@ -577,17 +593,17 @@ func ValidGroupName(name string) bool {
 // POST /api/user-groups answers 201 (controller/user_group_controller.go:31,
 // :137); both fields are required, 2 to 50 characters for the friendly name
 // (dto/user_group_dto.go:35-39).
-func (c *Client) CreateGroup(name string) (Group, error) {
+func (c *Client) CreateGroup(ctx context.Context, name string) (Group, error) {
 	var out Group
-	err := c.do("POST", "/api/user-groups", nil, map[string]string{"name": name, "friendlyName": name}, &out, 201)
+	err := c.do(ctx, "POST", "/api/user-groups", nil, map[string]string{"name": name, "friendlyName": name}, &out, 201)
 	return out, err
 }
 
 // SetUserGroups replaces a user's groups. PUT /api/users/:id/user-groups
 // (controller/user_controller.go:41, :391-410) replaces the whole set, so a
 // caller adding one group sends the user's current groups as well.
-func (c *Client) SetUserGroups(userID string, groupIDs []string) error {
-	return c.do("PUT", "/api/users/"+url.PathEscape(userID)+"/user-groups", nil,
+func (c *Client) SetUserGroups(ctx context.Context, userID string, groupIDs []string) error {
+	return c.do(ctx, "PUT", "/api/users/"+url.PathEscape(userID)+"/user-groups", nil,
 		map[string][]string{"userGroupIds": groupIDs}, nil, 200)
 }
 
@@ -628,8 +644,8 @@ type NewOIDCClient struct {
 // groups, or nil. The list (controller/oidc_controller.go:28, :124-154) gives
 // only a count of allowed groups, so the match is read again by ID
 // (controller/oidc_controller.go:30).
-func (c *Client) FindOIDCClient(name string) (*OIDCClient, error) {
-	clients, err := list[OIDCClient](c, "/api/oidc/clients", name)
+func (c *Client) FindOIDCClient(ctx context.Context, name string) (*OIDCClient, error) {
+	clients, err := list[OIDCClient](ctx, c, "/api/oidc/clients", name)
 	if err != nil {
 		return nil, err
 	}
@@ -638,7 +654,7 @@ func (c *Client) FindOIDCClient(name string) (*OIDCClient, error) {
 			continue
 		}
 		var full OIDCClient
-		if err := c.do("GET", "/api/oidc/clients/"+url.PathEscape(found.ID), nil, nil, &full, 200); err != nil {
+		if err := c.do(ctx, "GET", "/api/oidc/clients/"+url.PathEscape(found.ID), nil, nil, &full, 200); err != nil {
 			return nil, err
 		}
 		return &full, nil
@@ -651,9 +667,9 @@ func (c *Client) FindOIDCClient(name string) (*OIDCClient, error) {
 // 404 for an ID it does not hold: the service maps gorm's record not found to
 // apperror.NotFound (service/oidc_service.go, getClientInternal), which is
 // http.StatusNotFound (apperror/constructors.go:14-16), at tag v2.14.0.
-func (c *Client) OIDCClientByID(id string) (*OIDCClient, error) {
+func (c *Client) OIDCClientByID(ctx context.Context, id string) (*OIDCClient, error) {
 	var out OIDCClient
-	err := c.do("GET", "/api/oidc/clients/"+url.PathEscape(id), nil, nil, &out, 200)
+	err := c.do(ctx, "GET", "/api/oidc/clients/"+url.PathEscape(id), nil, nil, &out, 200)
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.Status == 404 {
 		return nil, nil
@@ -669,8 +685,8 @@ func (c *Client) OIDCClientByID(id string) (*OIDCClient, error) {
 // for an ID it does not hold (service/oidc_service.go, DeleteClient), at tag
 // v2.14.0. A 404 is success here, so a run interrupted after the delete
 // reaches the same end on the next one.
-func (c *Client) DeleteOIDCClient(id string) error {
-	err := c.do("DELETE", "/api/oidc/clients/"+url.PathEscape(id), nil, nil, nil, 204)
+func (c *Client) DeleteOIDCClient(ctx context.Context, id string) error {
+	err := c.do(ctx, "DELETE", "/api/oidc/clients/"+url.PathEscape(id), nil, nil, nil, 204)
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.Status == 404 {
 		return nil
@@ -680,9 +696,9 @@ func (c *Client) DeleteOIDCClient(id string) error {
 
 // CreateOIDCClient creates a client. POST /api/oidc/clients answers 201
 // (controller/oidc_controller.go:29, :166-186). It creates no secret.
-func (c *Client) CreateOIDCClient(n NewOIDCClient) (OIDCClient, error) {
+func (c *Client) CreateOIDCClient(ctx context.Context, n NewOIDCClient) (OIDCClient, error) {
 	var out OIDCClient
-	err := c.do("POST", "/api/oidc/clients", nil, n, &out, 201)
+	err := c.do(ctx, "POST", "/api/oidc/clients", nil, n, &out, 201)
 	return out, err
 }
 
@@ -701,21 +717,21 @@ var clientUpdateFields = []string{
 // leaves the rest of it as it is (see updateClient). The update DTO takes
 // skipConsent (dto/oidc_dto.go:50 at v2.14.0) and writes it with the other
 // fields, so it travels in the same whole-client PUT.
-func (c *Client) SetSkipConsent(clientID string, skip bool) error {
-	return c.updateClient(clientID, "skipConsent", skip)
+func (c *Client) SetSkipConsent(ctx context.Context, clientID string, skip bool) error {
+	return c.updateClient(ctx, clientID, "skipConsent", skip)
 }
 
 // SetLaunchURL sets a client's launch URL and leaves the rest of it as it is
 // (see updateClient).
-func (c *Client) SetLaunchURL(clientID, launchURL string) error {
-	return c.updateClient(clientID, "launchURL", launchURL)
+func (c *Client) SetLaunchURL(ctx context.Context, clientID, launchURL string) error {
+	return c.updateClient(ctx, clientID, "launchURL", launchURL)
 }
 
 // SetClientName renames a client and leaves the rest of it as it is (see
 // updateClient). The name is what Pocket ID shows a person signing in with
-// the client, and is how this toolkit finds the client again.
-func (c *Client) SetClientName(clientID, name string) error {
-	return c.updateClient(clientID, "name", name)
+// the client, and is how a caller can find the client again.
+func (c *Client) SetClientName(ctx context.Context, clientID, name string) error {
+	return c.updateClient(ctx, clientID, "name", name)
 }
 
 // updateClient sets one field of a client and leaves the rest of it as it is.
@@ -734,10 +750,10 @@ func (c *Client) SetClientName(clientID, name string) error {
 //
 // One side effect is Pocket ID's own: a client with PKCE off has its "PKCE
 // supported" hint cleared (:277-280), as saving it in the admin UI does.
-func (c *Client) updateClient(clientID, field string, value any) error {
+func (c *Client) updateClient(ctx context.Context, clientID, field string, value any) error {
 	path := "/api/oidc/clients/" + url.PathEscape(clientID)
 	var current map[string]json.RawMessage
-	if err := c.do("GET", path, nil, nil, &current, 200); err != nil {
+	if err := c.do(ctx, "GET", path, nil, nil, &current, 200); err != nil {
 		return err
 	}
 	body := map[string]any{}
@@ -756,15 +772,15 @@ func (c *Client) updateClient(clientID, field string, value any) error {
 	}
 	body["credentials"] = creds
 	body[field] = value
-	return c.do("PUT", path, nil, body, nil, 200)
+	return c.do(ctx, "PUT", path, nil, body, nil, 200)
 }
 
 // SetAllowedGroups replaces the groups a restricted client admits.
 // PUT /api/oidc/clients/:id/allowed-user-groups (controller/oidc_controller.go:36)
 // replaces the association and leaves isGroupRestricted as it was
 // (service/oidc_service.go:578-623).
-func (c *Client) SetAllowedGroups(clientID string, groupIDs []string) error {
-	return c.do("PUT", "/api/oidc/clients/"+url.PathEscape(clientID)+"/allowed-user-groups", nil,
+func (c *Client) SetAllowedGroups(ctx context.Context, clientID string, groupIDs []string) error {
+	return c.do(ctx, "PUT", "/api/oidc/clients/"+url.PathEscape(clientID)+"/allowed-user-groups", nil,
 		map[string][]string{"userGroupIds": groupIDs}, nil, 200)
 }
 
@@ -782,9 +798,9 @@ const MaxClientSecrets = 20
 
 // ClientSecrets lists a client's secrets, without their values.
 // GET /api/oidc/clients/:id/secrets (controller/oidc_controller.go:37, :274-288).
-func (c *Client) ClientSecrets(clientID string) ([]ClientSecret, error) {
+func (c *Client) ClientSecrets(ctx context.Context, clientID string) ([]ClientSecret, error) {
 	var out []ClientSecret
-	err := c.do("GET", "/api/oidc/clients/"+url.PathEscape(clientID)+"/secrets", nil, nil, &out, 200)
+	err := c.do(ctx, "GET", "/api/oidc/clients/"+url.PathEscape(clientID)+"/secrets", nil, nil, &out, 200)
 	return out, err
 }
 
@@ -794,11 +810,11 @@ func (c *Client) ClientSecrets(clientID string) ([]ClientSecret, error) {
 // least 16 printable ASCII characters (dto/oidc_dto.go:77-83,
 // service/oidc_service.go:357-364) and leaves the client's other secrets
 // usable (controller/oidc_controller.go:292). Supplying the value is what lets
-// the toolkit record it before Pocket ID ever holds it. The response echoes
+// the caller record it before Pocket ID ever holds it. The response echoes
 // it (dto/oidc_dto.go:85-89), so the response is read for nothing and the
 // value is scrubbed from any error.
-func (c *Client) AddClientSecret(clientID, secret string) error {
-	return c.do("POST", "/api/oidc/clients/"+url.PathEscape(clientID)+"/secrets", nil,
+func (c *Client) AddClientSecret(ctx context.Context, clientID, secret string) error {
+	return c.do(ctx, "POST", "/api/oidc/clients/"+url.PathEscape(clientID)+"/secrets", nil,
 		map[string]string{"secret": secret}, nil, 201, secret)
 }
 
@@ -810,8 +826,8 @@ func (c *Client) AddClientSecret(clientID, secret string) error {
 // (service/oidc_service.go, DeleteClientSecret), at tag v2.14.0. A 404 is
 // success here, so a run interrupted after the delete reaches the same end on
 // the next one. Nothing in the request or the answer carries a secret's value.
-func (c *Client) DeleteClientSecret(clientID, secretID string) error {
-	err := c.do("DELETE", "/api/oidc/clients/"+url.PathEscape(clientID)+"/secrets/"+url.PathEscape(secretID), nil, nil, nil, 204)
+func (c *Client) DeleteClientSecret(ctx context.Context, clientID, secretID string) error {
+	err := c.do(ctx, "DELETE", "/api/oidc/clients/"+url.PathEscape(clientID)+"/secrets/"+url.PathEscape(secretID), nil, nil, nil, 204)
 	var apiErr *APIError
 	if errors.As(err, &apiErr) && apiErr.Status == 404 {
 		return nil

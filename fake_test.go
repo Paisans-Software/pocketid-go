@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/paisans-software/paisans-stack/internal/pocketid"
+	"github.com/paisans-software/pocketid-go"
 )
 
 // request is one curl config, parsed back the way curl reads it.
@@ -32,7 +32,7 @@ func (f *fakeAPI) RunInput(command, stdin string) (string, error) {
 	r := parseConfig(f.t, stdin)
 	f.requests = append(f.requests, r)
 	status, body := f.handle(r)
-	return fmt.Sprintf("%s\npaisans-http-status:%d", body, status), nil
+	return fmt.Sprintf("%s\npocketid-http-status:%d", body, status), nil
 }
 
 func parseConfig(t *testing.T, cfg string) request {
