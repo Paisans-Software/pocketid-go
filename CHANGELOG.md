@@ -5,6 +5,10 @@ All notable changes to this project are documented here, in the
 
 ## [Unreleased]
 
+### Changed
+
+- The module is licensed under MIT.
+
 ## [0.2.0] - 2026-10-14
 
 ### Added
