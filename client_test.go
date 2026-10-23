@@ -441,7 +441,7 @@ func TestOIDCClientsReadsEveryPage(t *testing.T) {
 		case "1":
 			return 200, `{"data":[{"id":"c-0","name":"Forum","hasLogo":true,"hasDarkLogo":true,"launchURL":"https://forum.example.org"}],"pagination":{"totalPages":2}}`
 		case "2":
-			return 200, `{"data":[{"id":"c-1","name":"Wiki","hasLogo":false,"launchURL":null,"isGroupRestricted":true}],"pagination":{"totalPages":2}}`
+			return 200, `{"data":[{"id":"c-1","name":"Wiki","hasLogo":false,"launchURL":null,"isGroupRestricted":true,"allowedUserGroups":[{"id":"g-1","name":"wiki"}]}],"pagination":{"totalPages":2}}`
 		default:
 			t.Errorf("page %q, want 1 or 2", page)
 			return 400, `{}`
@@ -460,7 +460,35 @@ func TestOIDCClientsReadsEveryPage(t *testing.T) {
 	if got[1].HasLogo || got[1].HasDarkLogo || got[1].LaunchURL != nil || !got[1].IsGroupRestricted {
 		t.Errorf("second client %+v", got[1])
 	}
+	if len(got[1].AllowedUserGroups) != 1 || got[1].AllowedUserGroups[0].ID != "g-1" {
+		t.Errorf("second client's groups %+v", got[1].AllowedUserGroups)
+	}
 	if len(f.requests) != 2 {
 		t.Errorf("read %d pages, want 2", len(f.requests))
+	}
+}
+
+// The client named exactly so is taken from the search, groups and all, with
+// no second read; a near match is not it.
+func TestFindOIDCClientReadsOnlyTheList(t *testing.T) {
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
+		if r.Method != "GET" || r.URL.Path != "/api/oidc/clients" {
+			t.Errorf("request %s %s", r.Method, r.URL.Path)
+		}
+		return 200, `{"data":[{"id":"c-0","name":"Wiki Old"},{"id":"c-1","name":"Wiki","isGroupRestricted":true,"allowedUserGroups":[{"id":"g-1","name":"wiki"}]}],"pagination":{"totalPages":1}}`
+	}}
+	c := newClient(f)
+	got, err := c.FindOIDCClient(context.Background(), "Wiki")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || got.ID != "c-1" || len(got.AllowedUserGroups) != 1 || got.AllowedUserGroups[0].ID != "g-1" {
+		t.Fatalf("found %+v", got)
+	}
+	if len(f.requests) != 1 {
+		t.Errorf("%d requests, want 1", len(f.requests))
+	}
+	if got, err := c.FindOIDCClient(context.Background(), "Blog"); err != nil || got != nil {
+		t.Errorf("no exact match: %+v, %v", got, err)
 	}
 }

@@ -738,32 +738,24 @@ type NewOIDCClient struct {
 }
 
 // OIDCClients returns every client, all pages
-// (controller/oidc_controller.go:31 at v2.18.0). Entries may omit
-// allowedUserGroups: older Pocket ID gave only a count in the list
-// (v2.14.0), so a caller that needs the groups reads the client by ID with
-// OIDCClientByID.
+// (controller/oidc_controller.go:31 at v2.18.0), each with its allowed
+// groups.
 func (c *Client) OIDCClients(ctx context.Context) ([]OIDCClient, error) {
 	return list[OIDCClient](ctx, c, "/api/oidc/clients", "")
 }
 
 // FindOIDCClient returns the client with exactly this name, with its allowed
-// groups, or nil. The list (controller/oidc_controller.go:28, :124-154) gives
-// only a count of allowed groups, so the match is read again by ID
-// (controller/oidc_controller.go:30).
+// groups, or nil. The list (controller/oidc_controller.go:28, :124-154)
+// searches by name and gives each client's allowed groups.
 func (c *Client) FindOIDCClient(ctx context.Context, name string) (*OIDCClient, error) {
 	clients, err := list[OIDCClient](ctx, c, "/api/oidc/clients", name)
 	if err != nil {
 		return nil, err
 	}
 	for _, found := range clients {
-		if found.Name != name {
-			continue
+		if found.Name == name {
+			return &found, nil
 		}
-		var full OIDCClient
-		if err := c.do(ctx, "GET", "/api/oidc/clients/"+url.PathEscape(found.ID), nil, nil, &full, 200); err != nil {
-			return nil, err
-		}
-		return &full, nil
 	}
 	return nil, nil
 }
