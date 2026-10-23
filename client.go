@@ -1,8 +1,11 @@
 // Package pocketid calls a running Pocket ID's REST API with its static API
 // key.
 //
-// Every route, payload and status code here was read from Pocket ID's source
-// at tag v2.14.0 (github.com/pocket-id/pocket-id); each method cites where.
+// The client supports Pocket ID v2.18.0 and newer. Every route, payload and
+// status code here was read from Pocket ID's source at tag v2.18.0
+// (github.com/pocket-id/pocket-id); each method's comment cites where. The
+// integration test runs against v2.18.0 by default. A Pocket ID major release
+// is a major release here.
 //
 // A Client reaches Pocket ID one of two ways. With HTTP set, it sends each
 // request straight to BaseURL, for code running beside Pocket ID. Otherwise
@@ -273,7 +276,7 @@ func Redact(err error, secrets ...string) error {
 }
 
 // pageSize is Pocket ID's own ceiling: a larger limit is cut to 100
-// (utils/list_request_util.go:60-64).
+// (utils/list_request_util.go:61-65).
 const pageSize = 100
 
 // paginated is dto.Paginated (dto/pagination_dto.go:7-10).
@@ -354,7 +357,7 @@ func (u User) InGroup(id string) bool {
 }
 
 // NewUser is dto.UserCreateDto (dto/user_dto.go:25-38), the fields set here.
-// EmailVerified is stored as sent (service/user_service.go:299); left out, it
+// EmailVerified is stored as sent (service/user_service.go:316); left out, it
 // is false, and Pocket ID then sends email_verified false in every ID token.
 type NewUser struct {
 	Username      string  `json:"username"`
@@ -382,14 +385,14 @@ func (c *Client) FindUser(ctx context.Context, username string) (*User, error) {
 }
 
 // SearchUsers returns every user Pocket ID's search matches, a substring of
-// the username, the email or the names (service/user_service.go:60-61), so
+// the username, the email or the names (service/user_service.go:64-65), so
 // callers compare exactly afterwards.
 func (c *Client) SearchUsers(ctx context.Context, search string) ([]User, error) {
 	return list[User](ctx, c, "/api/users", search)
 }
 
 // Users returns every user, each with its groups: ListUsers preloads them
-// (service/user_service.go:51-56).
+// (service/user_service.go:55-60).
 func (c *Client) Users(ctx context.Context) ([]User, error) {
 	return list[User](ctx, c, "/api/users", "")
 }
@@ -409,7 +412,7 @@ func (c *Client) HasAdmin(ctx context.Context) (bool, error) {
 }
 
 // User reads one user with its groups. GET /api/users/:id
-// (controller/user_controller.go:32; service/user_service.go:70-80 preloads
+// (controller/user_controller.go:32; service/user_service.go:74-84 preloads
 // UserGroups).
 func (c *Client) User(ctx context.Context, id string) (User, error) {
 	var out User
@@ -441,9 +444,9 @@ func (c *Client) Demote(ctx context.Context, u User) error {
 // tokens Pocket ID issues for them carry email_verified true. See updateUser.
 //
 // An administrator's update stores emailVerified as sent
-// (service/user_service.go:515-517). The one rule that would override it,
+// (service/user_service.go:552-554). The one rule that would override it,
 // resetting verification to the EMAILS_VERIFIED setting, applies only when the
-// email changes (service/user_service.go:507-510), and the email is sent back
+// email changes (service/user_service.go:544-547), and the email is sent back
 // unchanged.
 func (c *Client) VerifyEmail(ctx context.Context, u User) error {
 	u.EmailVerified = true
@@ -522,7 +525,7 @@ func (c *Client) UpdateUser(ctx context.Context, id string, change UserChange) (
 // PUT /api/users/:id (controller/user_controller.go:34, :279-281, :430-440)
 // takes the whole create DTO and overwrites every personal field, admin flag,
 // verification and disabled state with what it is sent
-// (service/user_service.go:495-519), so a caller changes one field of the user
+// (service/user_service.go:532-556), so a caller changes one field of the user
 // exactly as read and sends the rest unchanged. Sending only the one field
 // would blank the name.
 func (c *Client) updateUser(ctx context.Context, u User) error {
@@ -603,14 +606,14 @@ type AuditEvent struct {
 
 // HasPasskey reports whether a user has ever registered a passkey: whether
 // the audit log holds a PASSKEY_ADDED event for them
-// (model/audit_log.go:38, written at webauthn/service.go:204). No admin route
+// (model/audit_log.go:38, written at webauthn/service.go:208). No admin route
 // lists another user's passkeys, so this is the one read that answers it.
 //
 // GET /api/audit-logs/all (controller/audit_log_controller.go:24) filters on
 // the model's filterable fields, Event and UserID (model/audit_log.go:10-22),
 // by the key the frontend sends, userID (audit-log-list.svelte:71); a key it
 // does not know is ignored rather than refused
-// (utils/list_request_util.go:132-146). So each row's user is checked as
+// (utils/list_request_util.go:133-147). So each row's user is checked as
 // well, and a filter that did not apply cannot answer for someone else.
 // Read only.
 func (c *Client) HasPasskey(ctx context.Context, userID string) (bool, error) {
@@ -637,7 +640,7 @@ func (c *Client) HasPasskey(ctx context.Context, userID string) (bool, error) {
 
 // LoginLink is where a one-time token is exchanged in a browser: the app's
 // public URL, /lc/, and the token, the same link Pocket ID's own CLI prints
-// (cmds/one_time_access_token.go:78; frontend/src/routes/lc/[code]).
+// (cmds/one_time_access_token.go:67; frontend/src/routes/lc/[code]).
 func LoginLink(publicURL, token string) string {
 	return strings.TrimRight(publicURL, "/") + "/lc/" + token
 }
@@ -665,7 +668,7 @@ func (c *Client) Groups(ctx context.Context) ([]Group, error) {
 }
 
 // ValidGroupName is whether CreateGroup's request would pass Pocket ID
-// v2.14.0 for name. The group DTO binds the name to `required,min=2,max=255`
+// v2.18.0 for name. The group DTO binds the name to `required,min=2,max=255`
 // and the friendly name to `required,min=2,max=50`
 // (dto/user_group_dto.go:36-37), with no character pattern on either, and
 // CreateGroup sends name as both, so the tighter bound governs. The validator
@@ -696,7 +699,7 @@ func (c *Client) SetUserGroups(ctx context.Context, userID string, groupIDs []st
 }
 
 // OIDCClient is dto.OidcClientWithAllowedUserGroupsDto
-// (dto/oidc_dto.go:16-34), the parts read here.
+// (dto/oidc_dto.go:20-39), the parts read here.
 type OIDCClient struct {
 	ID                string   `json:"id"`
 	Name              string   `json:"name"`
@@ -711,19 +714,19 @@ type OIDCClient struct {
 	// (controller/oidc_controller.go:43).
 	HasLogo bool `json:"hasLogo"`
 	// HasDarkLogo is dto.OidcClientMetaDataDto.HasDarkLogo (dto/oidc_dto.go:14
-	// at v2.18.0), set by the list (controller/oidc_controller.go:117).
+	// at v2.18.0), set by the list (controller/oidc_controller.go:143).
 	// GET /api/oidc/clients/:id/logo?light=false serves it, falling back to
 	// the other variant when there is none (service/oidc_service.go:526-537).
 	HasDarkLogo bool `json:"hasDarkLogo"`
-	// SkipConsent is dto.OidcClientDto.SkipConsent (dto/oidc_dto.go:23 at
-	// v2.14.0).
+	// SkipConsent is dto.OidcClientDto.SkipConsent (dto/oidc_dto.go:28 at
+	// v2.18.0).
 	SkipConsent bool `json:"skipConsent"`
 }
 
-// NewOIDCClient is dto.OidcClientCreateDto (dto/oidc_dto.go:41-65), the fields
+// NewOIDCClient is dto.OidcClientCreateDto (dto/oidc_dto.go:52-77), the fields
 // set here. The ID is left to Pocket ID. LaunchURL is what puts the client
 // on a member's dashboard: the list the dashboard reads shows only clients
-// that have one, as a single query at v2.18.0 (service/oidc_service.go:844-857).
+// that have one, as a single query at v2.18.0 (service/oidc_service.go:839-846).
 type NewOIDCClient struct {
 	Name              string   `json:"name"`
 	CallbackURLs      []string `json:"callbackURLs"`
@@ -731,21 +734,21 @@ type NewOIDCClient struct {
 	PkceEnabled       bool     `json:"pkceEnabled"`
 	IsGroupRestricted bool     `json:"isGroupRestricted"`
 	LaunchURL         string   `json:"launchURL,omitempty"`
-	// SkipConsent is dto.OidcClientCreateDto.SkipConsent (dto/oidc_dto.go:50),
+	// SkipConsent is dto.OidcClientCreateDto.SkipConsent (dto/oidc_dto.go:62),
 	// accepted on create as on update. It has no omitempty: false is a
 	// choice the plan shows, not an absence.
 	SkipConsent bool `json:"skipConsent"`
 }
 
 // OIDCClients returns every client, all pages
-// (controller/oidc_controller.go:31 at v2.18.0), each with its allowed
+// (controller/oidc_controller.go:30 at v2.18.0), each with its allowed
 // groups.
 func (c *Client) OIDCClients(ctx context.Context) ([]OIDCClient, error) {
 	return list[OIDCClient](ctx, c, "/api/oidc/clients", "")
 }
 
 // FindOIDCClient returns the client with exactly this name, with its allowed
-// groups, or nil. The list (controller/oidc_controller.go:28, :124-154)
+// groups, or nil. The list (controller/oidc_controller.go:30, :127-157)
 // searches by name and gives each client's allowed groups.
 func (c *Client) FindOIDCClient(ctx context.Context, name string) (*OIDCClient, error) {
 	clients, err := list[OIDCClient](ctx, c, "/api/oidc/clients", name)
@@ -761,10 +764,10 @@ func (c *Client) FindOIDCClient(ctx context.Context, name string) (*OIDCClient, 
 }
 
 // OIDCClientByID returns the client with this ID, or nil when Pocket ID holds
-// none. GET /api/oidc/clients/:id (controller/oidc_controller.go:30) answers
+// none. GET /api/oidc/clients/:id (controller/oidc_controller.go:32) answers
 // 404 for an ID it does not hold: the service maps gorm's record not found to
 // apperror.NotFound (service/oidc_service.go, getClientInternal), which is
-// http.StatusNotFound (apperror/constructors.go:14-16), at tag v2.14.0.
+// http.StatusNotFound (apperror/constructors.go:14-16), at tag v2.18.0.
 func (c *Client) OIDCClientByID(ctx context.Context, id string) (*OIDCClient, error) {
 	var out OIDCClient
 	err := c.do(ctx, "GET", "/api/oidc/clients/"+url.PathEscape(id), nil, nil, &out, 200)
@@ -779,9 +782,9 @@ func (c *Client) OIDCClientByID(ctx context.Context, id string) (*OIDCClient, er
 }
 
 // DeleteOIDCClient deletes a client by ID. DELETE /api/oidc/clients/:id
-// answers 204 (controller/oidc_controller.go:34, deleteClientHandler) and 404
+// answers 204 (controller/oidc_controller.go:36, deleteClientHandler) and 404
 // for an ID it does not hold (service/oidc_service.go, DeleteClient), at tag
-// v2.14.0. A 404 is success here, so a run interrupted after the delete
+// v2.18.0. A 404 is success here, so a run interrupted after the delete
 // reaches the same end on the next one.
 func (c *Client) DeleteOIDCClient(ctx context.Context, id string) error {
 	err := c.do(ctx, "DELETE", "/api/oidc/clients/"+url.PathEscape(id), nil, nil, nil, 204)
@@ -813,7 +816,7 @@ var clientUpdateFields = []string{
 
 // SetSkipConsent sets whether the client skips Pocket ID's consent screen and
 // leaves the rest of it as it is (see updateClient). The update DTO takes
-// skipConsent (dto/oidc_dto.go:50 at v2.14.0) and writes it with the other
+// skipConsent (dto/oidc_dto.go:62 at v2.18.0) and writes it with the other
 // fields, so it travels in the same whole-client PUT.
 func (c *Client) SetSkipConsent(ctx context.Context, clientID string, skip bool) error {
 	return c.updateClient(ctx, clientID, "skipConsent", skip)
@@ -874,17 +877,17 @@ func (c *Client) updateClient(ctx context.Context, clientID, field string, value
 }
 
 // SetAllowedGroups replaces the groups a restricted client admits.
-// PUT /api/oidc/clients/:id/allowed-user-groups (controller/oidc_controller.go:36)
+// PUT /api/oidc/clients/:id/allowed-user-groups (controller/oidc_controller.go:38)
 // replaces the association and leaves isGroupRestricted as it was
-// (service/oidc_service.go:578-623).
+// (service/oidc_service.go:656-702).
 func (c *Client) SetAllowedGroups(ctx context.Context, clientID string, groupIDs []string) error {
 	return c.do(ctx, "PUT", "/api/oidc/clients/"+url.PathEscape(clientID)+"/allowed-user-groups", nil,
 		map[string][]string{"userGroupIds": groupIDs}, nil, 200)
 }
 
-// ClientSecret is dto.OidcClientSecretDto (dto/oidc_dto.go:67-75): never the
+// ClientSecret is dto.OidcClientSecretDto (dto/oidc_dto.go:79-87): never the
 // value, only its first four characters (model/oidc.go:43,
-// service/oidc_service.go:436-442).
+// service/oidc_service.go:511-518).
 type ClientSecret struct {
 	ID       string `json:"id"`
 	Prefix   string `json:"prefix"`
@@ -895,7 +898,7 @@ type ClientSecret struct {
 const MaxClientSecrets = 20
 
 // ClientSecrets lists a client's secrets, without their values.
-// GET /api/oidc/clients/:id/secrets (controller/oidc_controller.go:37, :274-288).
+// GET /api/oidc/clients/:id/secrets (controller/oidc_controller.go:39, :285-299).
 func (c *Client) ClientSecrets(ctx context.Context, clientID string) ([]ClientSecret, error) {
 	var out []ClientSecret
 	err := c.do(ctx, "GET", "/api/oidc/clients/"+url.PathEscape(clientID)+"/secrets", nil, nil, &out, 200)
@@ -905,11 +908,11 @@ func (c *Client) ClientSecrets(ctx context.Context, clientID string) ([]ClientSe
 // AddClientSecret gives a client a secret whose value the caller chose.
 //
 // POST /api/oidc/clients/:id/secrets accepts a caller supplied value of at
-// least 16 printable ASCII characters (dto/oidc_dto.go:77-83,
-// service/oidc_service.go:357-364) and leaves the client's other secrets
-// usable (controller/oidc_controller.go:292). Supplying the value is what lets
+// least 16 printable ASCII characters (dto/oidc_dto.go:89-95,
+// service/oidc_service.go:452-460) and leaves the client's other secrets
+// usable (controller/oidc_controller.go:303). Supplying the value is what lets
 // the caller record it before Pocket ID ever holds it. The response echoes
-// it (dto/oidc_dto.go:85-89), so the response is read for nothing and the
+// it (dto/oidc_dto.go:97-101), so the response is read for nothing and the
 // value is scrubbed from any error.
 func (c *Client) AddClientSecret(ctx context.Context, clientID, secret string) error {
 	return c.do(ctx, "POST", "/api/oidc/clients/"+url.PathEscape(clientID)+"/secrets", nil,
@@ -921,7 +924,7 @@ func (c *Client) AddClientSecret(ctx context.Context, clientID, secret string) e
 // DELETE /api/oidc/clients/:id/secrets/:secretId answers 204
 // (controller/oidc_controller.go, deleteClientSecretHandler), and the service
 // answers apperror.NotFound, a 404, for a client or a secret it does not hold
-// (service/oidc_service.go, DeleteClientSecret), at tag v2.14.0. A 404 is
+// (service/oidc_service.go, DeleteClientSecret), at tag v2.18.0. A 404 is
 // success here, so a run interrupted after the delete reaches the same end on
 // the next one. Nothing in the request or the answer carries a secret's value.
 func (c *Client) DeleteClientSecret(ctx context.Context, clientID, secretID string) error {
@@ -941,7 +944,7 @@ const SecretPrefixLength = 4
 // start of value. Four characters is a check against an obvious mismatch, not
 // a proof: it is all Pocket ID keeps that can be compared without the value.
 // A secret shorter than five characters keeps no prefix at all
-// (service/oidc_service.go:437-439).
+// (service/oidc_service.go:513-515).
 func HasActiveSecret(secrets []ClientSecret, value string) bool {
 	if len(value) <= SecretPrefixLength {
 		return false

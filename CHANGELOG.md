@@ -5,6 +5,10 @@ All notable changes to this project are documented here, in the
 
 ## [Unreleased]
 
+### Changed
+
+- Pocket ID v2.18.0 or newer is required. FindOIDCClient reads only the client list, taking each client's allowed groups from it.
+
 ## [0.3.1] - 2026-10-23
 
 ### Added
