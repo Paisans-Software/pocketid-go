@@ -5,6 +5,10 @@ All notable changes to this project are documented here, in the
 
 ## [Unreleased]
 
+### Added
+
+- OIDCClient carries HasDarkLogo, whether the client has a dark-theme logo.
+
 ## [0.3.0] - 2026-10-23
 
 ### Added

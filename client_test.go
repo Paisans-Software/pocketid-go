@@ -437,10 +437,15 @@ func TestOIDCClientsReadsEveryPage(t *testing.T) {
 		if r.URL.Path != "/api/oidc/clients" {
 			t.Errorf("path %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("pagination[page]") == "1" {
-			return 200, `{"data":[{"id":"c-0","name":"Forum","hasLogo":true,"launchURL":"https://forum.example.org"}],"pagination":{"totalPages":2}}`
+		switch page := r.URL.Query().Get("pagination[page]"); page {
+		case "1":
+			return 200, `{"data":[{"id":"c-0","name":"Forum","hasLogo":true,"hasDarkLogo":true,"launchURL":"https://forum.example.org"}],"pagination":{"totalPages":2}}`
+		case "2":
+			return 200, `{"data":[{"id":"c-1","name":"Wiki","hasLogo":false,"launchURL":null,"isGroupRestricted":true}],"pagination":{"totalPages":2}}`
+		default:
+			t.Errorf("page %q, want 1 or 2", page)
+			return 400, `{}`
 		}
-		return 200, `{"data":[{"id":"c-1","name":"Wiki","hasLogo":false,"launchURL":null,"isGroupRestricted":true}],"pagination":{"totalPages":2}}`
 	}}
 	got, err := newClient(f).OIDCClients(context.Background())
 	if err != nil {
@@ -449,10 +454,10 @@ func TestOIDCClientsReadsEveryPage(t *testing.T) {
 	if len(got) != 2 || got[0].ID != "c-0" || got[1].ID != "c-1" {
 		t.Fatalf("read %+v", got)
 	}
-	if !got[0].HasLogo || got[0].LaunchURL == nil || *got[0].LaunchURL != "https://forum.example.org" {
+	if !got[0].HasLogo || !got[0].HasDarkLogo || got[0].LaunchURL == nil || *got[0].LaunchURL != "https://forum.example.org" {
 		t.Errorf("first client %+v", got[0])
 	}
-	if got[1].HasLogo || got[1].LaunchURL != nil || !got[1].IsGroupRestricted {
+	if got[1].HasLogo || got[1].HasDarkLogo || got[1].LaunchURL != nil || !got[1].IsGroupRestricted {
 		t.Errorf("second client %+v", got[1])
 	}
 	if len(f.requests) != 2 {
