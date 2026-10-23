@@ -5,6 +5,8 @@ All notable changes to this project are documented here, in the
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-23
+
 ### Added
 
 - OIDCClients lists every client, and OIDCClient carries HasLogo.
