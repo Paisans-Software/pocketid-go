@@ -706,6 +706,10 @@ type OIDCClient struct {
 	IsGroupRestricted bool     `json:"isGroupRestricted"`
 	AllowedUserGroups []Group  `json:"allowedUserGroups"`
 	LaunchURL         *string  `json:"launchURL"`
+	// HasLogo is dto.OidcClientMetaDataDto.HasLogo (dto/oidc_dto.go:13 at
+	// v2.18.0); the logo itself is public at GET /api/oidc/clients/:id/logo
+	// (controller/oidc_controller.go:43).
+	HasLogo bool `json:"hasLogo"`
 	// SkipConsent is dto.OidcClientDto.SkipConsent (dto/oidc_dto.go:23 at
 	// v2.14.0).
 	SkipConsent bool `json:"skipConsent"`
@@ -726,6 +730,15 @@ type NewOIDCClient struct {
 	// accepted on create as on update. It has no omitempty: false is a
 	// choice the plan shows, not an absence.
 	SkipConsent bool `json:"skipConsent"`
+}
+
+// OIDCClients returns every client, all pages
+// (controller/oidc_controller.go:31 at v2.18.0). Entries may omit
+// allowedUserGroups: older Pocket ID gave only a count in the list
+// (v2.14.0), so a caller that needs the groups reads the client by ID with
+// OIDCClientByID.
+func (c *Client) OIDCClients(ctx context.Context) ([]OIDCClient, error) {
+	return list[OIDCClient](ctx, c, "/api/oidc/clients", "")
 }
 
 // FindOIDCClient returns the client with exactly this name, with its allowed
