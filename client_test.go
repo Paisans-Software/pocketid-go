@@ -170,13 +170,14 @@ func TestNoKeyIsRefusedBeforeAnyRequest(t *testing.T) {
 }
 
 // SetLaunchURL reads the client and sends every field the update writes back
-// as read, with only launchURL changed: federated credentials kept, secrets
-// and logo URLs not sent, and the group restriction unchanged.
+// as read, with only launchURL changed: federated credentials and the
+// back-channel logout URL kept, secrets and logo URLs not sent, and the group
+// restriction unchanged.
 func TestSetLaunchURLSendsTheClientBackUnchanged(t *testing.T) {
 	current := `{"id":"c-1","name":"talk","description":"","hasLogo":true,"hasDarkLogo":false,"launchURL":null,
 		"requiresReauthentication":false,"clientType":"","callbackURLs":["https://talk.example.org/oauth/oidc/verify"],
-		"logoutCallbackURLs":[],"isPublic":false,"pkceEnabled":true,"requiresPushedAuthorizationRequests":false,
-		"skipConsent":true,"credentials":{"federatedIdentities":[{"issuer":"https://ci.example.org","replayProtection":false}],
+		"logoutCallbackURLs":[],"backchannelLogoutURL":"https://talk.example.org/oauth/backchannel","isPublic":false,
+		"pkceEnabled":true,"requiresPushedAuthorizationRequests":false,"skipConsent":true,"credentials":{"federatedIdentities":[{"issuer":"https://ci.example.org","replayProtection":false}],
 		"secrets":[{"id":"s-1","prefix":"abcd","isActive":true}]},"isGroupRestricted":true,
 		"accessTokenDurationMinutes":60,"refreshTokenDurationMinutes":43200,"allowedUserGroups":[{"id":"g-1","name":"members"}]}`
 	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
@@ -197,7 +198,7 @@ func TestSetLaunchURLSendsTheClientBackUnchanged(t *testing.T) {
 	}
 	want := map[string]any{
 		"name": "talk", "description": "", "callbackURLs": []any{"https://talk.example.org/oauth/oidc/verify"},
-		"logoutCallbackURLs": []any{}, "isPublic": false, "pkceEnabled": true, "requiresReauthentication": false,
+		"logoutCallbackURLs": []any{}, "backchannelLogoutURL": "https://talk.example.org/oauth/backchannel", "isPublic": false, "pkceEnabled": true, "requiresReauthentication": false,
 		"requiresPushedAuthorizationRequests": false, "skipConsent": true, "isGroupRestricted": true,
 		"accessTokenDurationMinutes": float64(60), "refreshTokenDurationMinutes": float64(43200),
 		"credentials": map[string]any{"federatedIdentities": []any{map[string]any{"issuer": "https://ci.example.org", "replayProtection": false}}},
@@ -490,5 +491,59 @@ func TestFindOIDCClientReadsOnlyTheList(t *testing.T) {
 	}
 	if got, err := c.FindOIDCClient(context.Background(), "Blog"); err != nil || got != nil {
 		t.Errorf("no exact match: %+v, %v", got, err)
+	}
+}
+
+// Pocket ID gives a new confidential client a secret of its own; it is deleted
+// by its ID, and the client comes back without it.
+func TestCreateOIDCClientDeletesTheSecretPocketIDMade(t *testing.T) {
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
+		switch {
+		case r.Method == "POST" && r.URL.Path == "/api/oidc/clients":
+			return 201, `{"id":"c-1","name":"wiki","createdSecret":{"id":"s-9","prefix":"zzzz","isActive":true,"secret":"zzzz-the-value-0123456789"}}`
+		case r.Method == "DELETE" && r.URL.Path == "/api/oidc/clients/c-1/secrets/s-9":
+			return 204, ``
+		}
+		t.Errorf("request %s %s", r.Method, r.URL.Path)
+		return 400, `{}`
+	}}
+	got, err := newClient(f).CreateOIDCClient(context.Background(), pocketid.NewOIDCClient{Name: "wiki"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ID != "c-1" || got.Name != "wiki" || len(f.requests) != 2 {
+		t.Fatalf("created %+v with %d requests", got, len(f.requests))
+	}
+}
+
+// A public client, or one made with AUTO_CREATE_OIDC_CLIENT_SECRET off, has no
+// secret to delete, and nothing else is sent.
+func TestCreateOIDCClientWithoutASecretSendsOnlyTheCreate(t *testing.T) {
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
+		return 201, `{"id":"c-1","name":"wiki","isPublic":true}`
+	}}
+	if _, err := newClient(f).CreateOIDCClient(context.Background(), pocketid.NewOIDCClient{Name: "wiki", IsPublic: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.requests) != 1 {
+		t.Errorf("%d requests, want 1", len(f.requests))
+	}
+}
+
+// When the delete fails, the created client is still returned, with an error
+// that names it and carries no secret.
+func TestCreateOIDCClientReturnsTheClientWhenTheDeleteFails(t *testing.T) {
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
+		if r.Method == "POST" {
+			return 201, `{"id":"c-1","name":"wiki","createdSecret":{"id":"s-9","secret":"zzzz-the-value-0123456789"}}`
+		}
+		return 500, `{"error":"boom"}`
+	}}
+	got, err := newClient(f).CreateOIDCClient(context.Background(), pocketid.NewOIDCClient{Name: "wiki"})
+	if err == nil || got.ID != "c-1" || !strings.Contains(err.Error(), "c-1") {
+		t.Fatalf("got %+v, %v", got, err)
+	}
+	if strings.Contains(err.Error(), "zzzz") {
+		t.Errorf("the error carries the secret: %v", err)
 	}
 }

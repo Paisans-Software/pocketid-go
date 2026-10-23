@@ -9,6 +9,11 @@ All notable changes to this project are documented here, in the
 
 - Pocket ID v2.18.0 or newer is required. FindOIDCClient reads only the client list, taking each client's allowed groups from it.
 
+### Fixed
+
+- CreateOIDCClient deletes the secret Pocket ID gives a new client by default, so a client holds only secrets its caller added. The value is never read.
+- SetSkipConsent, SetLaunchURL and SetClientName keep a client's back-channel logout URL. Each update cleared it.
+
 ## [0.3.1] - 2026-10-23
 
 ### Added

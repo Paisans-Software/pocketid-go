@@ -795,20 +795,38 @@ func (c *Client) DeleteOIDCClient(ctx context.Context, id string) error {
 	return err
 }
 
-// CreateOIDCClient creates a client. POST /api/oidc/clients answers 201
-// (controller/oidc_controller.go:29, :166-186). It creates no secret.
+// CreateOIDCClient creates a client with no secret. POST /api/oidc/clients
+// answers 201 (controller/oidc_controller.go:31, :164-197). With
+// AUTO_CREATE_OIDC_CLIENT_SECRET on, Pocket ID's default
+// (appconfig/model.go:70, :176), a client that is not public is created with
+// a secret whose value is in that answer, once (service/oidc_service.go:168-177,
+// dto/oidc_dto.go:42-45). That secret is deleted, so a client holds only the
+// secrets its caller gave it with AddClientSecret; its value is never
+// decoded. If the delete fails, the client is returned with the error.
 func (c *Client) CreateOIDCClient(ctx context.Context, n NewOIDCClient) (OIDCClient, error) {
-	var out OIDCClient
-	err := c.do(ctx, "POST", "/api/oidc/clients", nil, n, &out, 201)
-	return out, err
+	var out struct {
+		OIDCClient
+		CreatedSecret *struct {
+			ID string `json:"id"`
+		} `json:"createdSecret"`
+	}
+	if err := c.do(ctx, "POST", "/api/oidc/clients", nil, n, &out, 201); err != nil {
+		return OIDCClient{}, err
+	}
+	if out.CreatedSecret != nil {
+		if err := c.DeleteClientSecret(ctx, out.ID, out.CreatedSecret.ID); err != nil {
+			return out.OIDCClient, fmt.Errorf("created client %s, but not deleted the secret Pocket ID gave it: %w", out.ID, err)
+		}
+	}
+	return out.OIDCClient, nil
 }
 
 // clientUpdateFields are the fields of dto.OidcClientUpdateDto
-// (dto/oidc_dto.go:41-60) that the update writes to the client
-// (service/oidc_service.go:252-294) and that a read of the client returns
-// (dto/oidc_dto.go:5-29), apart from credentials, which is handled on its own.
+// (dto/oidc_dto.go:52-72) that the update writes to the client
+// (service/oidc_service.go:283-338) and that a read of the client returns
+// (dto/oidc_dto.go:9-34), apart from credentials, which is handled on its own.
 var clientUpdateFields = []string{
-	"name", "description", "callbackURLs", "logoutCallbackURLs", "isPublic",
+	"name", "description", "callbackURLs", "logoutCallbackURLs", "backchannelLogoutURL", "isPublic",
 	"pkceEnabled", "requiresReauthentication", "requiresPushedAuthorizationRequests",
 	"skipConsent", "isGroupRestricted", "accessTokenDurationMinutes",
 	"refreshTokenDurationMinutes", "launchURL",
@@ -837,20 +855,20 @@ func (c *Client) SetClientName(ctx context.Context, clientID, name string) error
 
 // updateClient sets one field of a client and leaves the rest of it as it is.
 //
-// PUT /api/oidc/clients/:id (controller/oidc_controller.go:32, :217-237)
+// PUT /api/oidc/clients/:id (controller/oidc_controller.go:34, :228-248)
 // overwrites every field it takes with what it is sent
-// (service/oidc_service.go:186-250, :252-294), so the client is read again
+// (service/oidc_service.go:208-281, :283-338), so the client is read again
 // and every field sent back as read, with only the one field changed. In
-// particular: callback URLs, PKCE and the public flag are sent unchanged;
-// isGroupRestricted is sent unchanged, which matters because sending false
-// clears the allowed groups (:199-205); the launch URL is sent back, since
-// the update writes it too; the federated credentials are sent back, since
-// the update replaces them (:282-292). Secrets are not sent and would be
-// ignored (dto/oidc_dto.go:93-94), and neither is a logo URL, which is
-// fetched only when one is sent (:235-247).
+// particular: callback URLs, the back-channel logout URL, PKCE and the public
+// flag are sent unchanged; isGroupRestricted is sent unchanged, which matters
+// because sending false clears the allowed groups (:225-227); the launch URL
+// is sent back, since the update writes it too; the federated credentials are
+// sent back, since the update replaces them (:314-335). Secrets are not sent
+// and would be ignored (dto/oidc_dto.go:105-106), and neither is a logo URL,
+// which is fetched only when one is sent (:266-280).
 //
 // One side effect is Pocket ID's own: a client with PKCE off has its "PKCE
-// supported" hint cleared (:277-280), as saving it in the admin UI does.
+// supported" hint cleared (:309-312), as saving it in the admin UI does.
 func (c *Client) updateClient(ctx context.Context, clientID, field string, value any) error {
 	path := "/api/oidc/clients/" + url.PathEscape(clientID)
 	var current map[string]json.RawMessage
