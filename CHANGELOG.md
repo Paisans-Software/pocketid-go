@@ -5,6 +5,10 @@ All notable changes to this project are documented here, in the
 
 ## [Unreleased]
 
+### Added
+
+- OIDCClients lists every client, and OIDCClient carries HasLogo.
+
 ### Changed
 
 - The module is licensed under MIT.
