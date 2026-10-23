@@ -426,3 +426,36 @@ func TestSetClientNameKeepsTheLaunchURL(t *testing.T) {
 		t.Errorf("the update carries secrets: %s", f.requests[1].Body)
 	}
 }
+
+// Every client is read, across pages, with whether it has a logo and where it
+// launches. Nothing but GET is sent.
+func TestOIDCClientsReadsEveryPage(t *testing.T) {
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
+		if r.Method != "GET" {
+			t.Errorf("method %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/api/oidc/clients" {
+			t.Errorf("path %s", r.URL.Path)
+		}
+		if r.URL.Query().Get("pagination[page]") == "1" {
+			return 200, `{"data":[{"id":"c-0","name":"Forum","hasLogo":true,"launchURL":"https://forum.example.org"}],"pagination":{"totalPages":2}}`
+		}
+		return 200, `{"data":[{"id":"c-1","name":"Wiki","hasLogo":false,"launchURL":null,"isGroupRestricted":true}],"pagination":{"totalPages":2}}`
+	}}
+	got, err := newClient(f).OIDCClients(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != "c-0" || got[1].ID != "c-1" {
+		t.Fatalf("read %+v", got)
+	}
+	if !got[0].HasLogo || got[0].LaunchURL == nil || *got[0].LaunchURL != "https://forum.example.org" {
+		t.Errorf("first client %+v", got[0])
+	}
+	if got[1].HasLogo || got[1].LaunchURL != nil || !got[1].IsGroupRestricted {
+		t.Errorf("second client %+v", got[1])
+	}
+	if len(f.requests) != 2 {
+		t.Errorf("read %d pages, want 2", len(f.requests))
+	}
+}

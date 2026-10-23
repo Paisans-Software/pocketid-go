@@ -92,4 +92,4 @@ each release.
 
 ## Licence
 
-AGPL-3.0-or-later. The full text is in `LICENSE`.
+MIT. The full text is in `LICENSE`.
