@@ -710,6 +710,11 @@ type OIDCClient struct {
 	// v2.18.0); the logo itself is public at GET /api/oidc/clients/:id/logo
 	// (controller/oidc_controller.go:43).
 	HasLogo bool `json:"hasLogo"`
+	// HasDarkLogo is dto.OidcClientMetaDataDto.HasDarkLogo (dto/oidc_dto.go:14
+	// at v2.18.0), set by the list (controller/oidc_controller.go:117).
+	// GET /api/oidc/clients/:id/logo?light=false serves it, falling back to
+	// the other variant when there is none (service/oidc_service.go:526-537).
+	HasDarkLogo bool `json:"hasDarkLogo"`
 	// SkipConsent is dto.OidcClientDto.SkipConsent (dto/oidc_dto.go:23 at
 	// v2.14.0).
 	SkipConsent bool `json:"skipConsent"`
@@ -717,8 +722,8 @@ type OIDCClient struct {
 
 // NewOIDCClient is dto.OidcClientCreateDto (dto/oidc_dto.go:41-65), the fields
 // set here. The ID is left to Pocket ID. LaunchURL is what puts the client
-// on a member's dashboard: both lists the dashboard reads show only clients
-// that have one (service/oidc_service.go:673-680, :758-765).
+// on a member's dashboard: the list the dashboard reads shows only clients
+// that have one, as a single query at v2.18.0 (service/oidc_service.go:844-857).
 type NewOIDCClient struct {
 	Name              string   `json:"name"`
 	CallbackURLs      []string `json:"callbackURLs"`
