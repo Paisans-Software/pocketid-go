@@ -30,7 +30,7 @@ const defaultImage = "ghcr.io/pocket-id/pocket-id:v2.18.0"
 const realKey = "integration-static-api-key-0123456789"
 
 // staticUserID is the user Pocket ID makes for its static API key, an
-// administrator with a fixed ID (apikey/service.go at v2.14.0).
+// administrator with a fixed ID (apikey/service.go at v2.18.0).
 const staticUserID = "00000000-0000-0000-0000-000000000000"
 
 func startPocketID(t *testing.T) string {
@@ -180,6 +180,9 @@ func exercise(t *testing.T, c *pocketid.Client, suffix string) {
 		IsGroupRestricted: true, LaunchURL: "https://wiki.example.org",
 	})
 	must(err)
+	if initial, err := c.ClientSecrets(ctx, created.ID); err != nil || len(initial) != 0 {
+		t.Fatalf("a new client holds secrets %+v, %v", initial, err)
+	}
 	must(c.SetAllowedGroups(ctx, created.ID, []string{group.ID}))
 	must(c.SetSkipConsent(ctx, created.ID, true))
 	must(c.SetLaunchURL(ctx, created.ID, "https://wiki.example.org/home"))

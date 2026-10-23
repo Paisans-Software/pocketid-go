@@ -11,10 +11,10 @@ go get github.com/paisans-software/pocketid-go
 
 ## Pocket ID versions
 
-The client is written against Pocket ID v2. Every route, payload and status
-code was read from Pocket ID's source at v2.14.0, and each method's comment
-cites where. The integration test runs against v2.18.0 by default. A Pocket
-ID major release is a major release here.
+The client supports Pocket ID v2.18.0 and newer. Every route, payload and
+status code was read from Pocket ID's source at v2.18.0, and each method's
+comment cites where. The integration test runs against v2.18.0 by default. A
+Pocket ID major release is a major release here.
 
 ## Two ways to reach Pocket ID
 
