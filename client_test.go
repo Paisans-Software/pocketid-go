@@ -169,6 +169,28 @@ func TestNoKeyIsRefusedBeforeAnyRequest(t *testing.T) {
 	}
 }
 
+// An empty launch URL is sent as null. Pocket ID validates launchURL with
+// binding:"omitempty,url" on a *string, which skips only nil, so "" is refused
+// with 400 "LaunchURL must be a valid URL"; null clears it.
+func TestSetLaunchURLClearsWithNull(t *testing.T) {
+	f := &fakeAPI{t: t, handle: func(r request) (int, string) {
+		if r.Method == "GET" {
+			return 200, `{"id":"c-1","name":"account","launchURL":"https://account.example.org","credentials":{}}`
+		}
+		return 200, `{}`
+	}}
+	if err := newClient(f).SetLaunchURL(context.Background(), "c-1", ""); err != nil {
+		t.Fatal(err)
+	}
+	var sent map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(f.requests[len(f.requests)-1].Body), &sent); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := sent["launchURL"]; !ok || string(got) != "null" {
+		t.Errorf("launchURL sent as %s, want null", got)
+	}
+}
+
 // SetLaunchURL reads the client and sends every field the update writes back
 // as read, with only launchURL changed: federated credentials and the
 // back-channel logout URL kept, secrets and logo URLs not sent, and the group
