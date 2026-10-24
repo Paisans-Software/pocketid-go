@@ -5,6 +5,10 @@ All notable changes to this project are documented here, in the
 
 ## [Unreleased]
 
+### Fixed
+
+- SetLaunchURL with an empty URL clears the launch URL. It sent an empty string, which Pocket ID refuses with 400.
+
 ## [0.4.0] - 2026-10-23
 
 ### Changed

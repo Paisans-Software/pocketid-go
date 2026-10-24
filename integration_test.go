@@ -194,6 +194,10 @@ func exercise(t *testing.T, c *pocketid.Client, suffix string) {
 		len(client.CallbackURLs) != 1 {
 		t.Fatalf("after the updates: %+v", client)
 	}
+	must(c.SetLaunchURL(ctx, created.ID, ""))
+	if client, err = c.FindOIDCClient(ctx, "Wiki "+suffix); err != nil || client == nil || client.LaunchURL != nil {
+		t.Fatalf("after clearing the launch URL: %+v, %v", client, err)
+	}
 
 	secret := "integration-secret-0123456789-" + suffix
 	must(c.AddClientSecret(ctx, created.ID, secret))

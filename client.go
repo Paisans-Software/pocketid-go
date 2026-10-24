@@ -841,8 +841,14 @@ func (c *Client) SetSkipConsent(ctx context.Context, clientID string, skip bool)
 }
 
 // SetLaunchURL sets a client's launch URL and leaves the rest of it as it is
-// (see updateClient).
+// (see updateClient). An empty one clears it, sent as null: the update DTO
+// validates launchURL with binding:"omitempty,url" on a *string
+// (dto/oidc_dto.go:64 at v2.18.0), which skips only nil, so "" is refused with
+// 400, and nil is what the update writes (service/oidc_service.go:289).
 func (c *Client) SetLaunchURL(ctx context.Context, clientID, launchURL string) error {
+	if launchURL == "" {
+		return c.updateClient(ctx, clientID, "launchURL", nil)
+	}
 	return c.updateClient(ctx, clientID, "launchURL", launchURL)
 }
 
